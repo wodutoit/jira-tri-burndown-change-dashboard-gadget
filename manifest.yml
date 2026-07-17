@@ -1,0 +1,42 @@
+# Starter manifest for a Forge app that hosts one or more Jira dashboard gadgets.
+#
+# This manifest has no `app.id` yet. Run `forge register` from this directory
+# before your first deploy — it will ask for an app name and write the id here
+# for you. See README.md for the full setup walkthrough.
+
+modules:
+  jira:dashboardGadget:
+    - key: sprint-tri-burndown-gadget
+      title: Sprint TRI burndown, change and failure tracking
+      description: Burndownn that tracks dev complete, review complete and test
+        complete as well as scope change and test failure rates
+      thumbnail: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
+  function:
+    - key: resolver
+      handler: index.handler
+
+resources:
+  - key: main
+    path: static/gadgets/build
+
+permissions:
+  scopes:
+    - read:jira-work
+    - read:issue:jira
+    - read:project:jira
+    - read:board-scope:jira-software
+    - read:sprint:jira-software
+    - read:issue-details:jira
+    - read:jql:jira
+    - storage:app
+
+app:
+  runtime:
+    name: nodejs22.x
+  id: ari:cloud:ecosystem::app/517f0a5f-2176-4d4d-ab49-58514706fef1

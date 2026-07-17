@@ -1,0 +1,16 @@
+{
+  "name": "tri-burndown-gadget",
+  "version": "0.1.0",
+  "description": "Atlassian Forge - Jira dashboard gadgets for epic burndowns, scope change and failures",
+  "main": "src/index.js",
+  "license": "MIT",
+  "scripts": {
+    "build-ui": "cd static/gadgets && npm run build",
+    "deploy-dev": "npm run build-ui && forge deploy" 
+  },
+  "dependencies": {
+    "@forge/api": "^8.0.1",
+    "@forge/resolver": "^2.0.0",
+    "@forge/storage": "^2.0.0"
+  }
+}

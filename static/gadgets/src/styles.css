@@ -1,0 +1,40 @@
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* ── Design tokens ───────────────────────────────────────────────────── */
+:root{
+  --surface:#fff;--surface-sunken:#F7F8F9;--surface-hover:#F1F2F4;
+  --text:#172B4D;--text-subtle:#44546F;--text-subtlest:#626F86;
+  --border:#DFE1E6;--border-subtle:#EBECF0;
+  --brand:#0C66E4;--brand-hover:#0065FF;
+  --ok:#4BCE97;--ok-bg:#DCFFF1;--ok-text:#216E4E;--ok-border:#7EE2B8;
+  --filling:#F5A623;--filling-bg:#FFF7D6;--filling-text:#974F0C;--filling-border:#F5CD47;
+  --over:#E34935;--over-bg:#FFECEB;--over-text:#AE2E24;--over-border:#F5A79D;
+  --info-bg:#E9F2FF;--info-text:#0055CC;--info-border:#A6C5F7;
+  --lz-n-bg:#F1F2F4;--lz-n-text:#44546F;
+  --shadow-sm:0 1px 1px rgba(9,30,66,.10),0 0 1px rgba(9,30,66,.13);
+}
+
+/* Dark theme — synced to Jira's own theme via view.theme.enable() (see the
+   gadget components), which sets data-color-mode="dark" on the document
+   element when the host is in dark mode. */
+html[data-color-mode="dark"]{
+  --surface:#22272B;--surface-sunken:#1D2125;--surface-hover:#2C333A;
+  --text:#C7D1DB;--text-subtle:#9FADBC;--text-subtlest:#7A8994;
+  --border:#3B4350;--border-subtle:#2C333A;
+  --brand:#4C9AFF;--brand-hover:#85B8FF;
+  --ok:#4BCE97;--ok-bg:#164B35;--ok-text:#7EE2B8;--ok-border:#216E4E;
+  --filling:#F5A623;--filling-bg:#4A3A11;--filling-text:#F5CD47;--filling-border:#946F00;
+  --over:#F87168;--over-bg:#5D1F1A;--over-text:#FF9C8F;--over-border:#B13A2B;
+  --info-bg:#1C2B41;--info-text:#85B8FF;--info-border:#2E5A9E;
+  --lz-n-bg:#3B4350;--lz-n-text:#C7D1DB;
+  --shadow-sm:0 1px 1px rgba(0,0,0,.4),0 0 1px rgba(0,0,0,.3);
+}
+
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--surface);color:var(--text)}
+
+.center-msg{display:flex;align-items:center;justify-content:center;height:120px;color:var(--text-subtlest);font-size:14px}
+
+/* Small set of form classes reused by every gadget's edit view */
+.field-group{margin-bottom:18px}
+.field-label{display:block;font-size:12px;font-weight:600;color:var(--text-subtle);margin-bottom:6px}
+.field-hint{font-size:12px;color:var(--text-subtlest);margin-top:5px;line-height:1.4}

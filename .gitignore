@@ -1,0 +1,6 @@
+node_modules/
+static/gadgets/node_modules/
+static/gadgets/build/
+.forge/
+*.log
+.env
