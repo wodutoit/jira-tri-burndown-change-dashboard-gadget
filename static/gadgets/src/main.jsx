@@ -4,9 +4,12 @@ import { view } from '@forge/bridge';
 import './styles.css';
 import TriBurndownGadgetView from './gadget/TriBurndownGadgetView';
 import TriBurndownGadgetEdit from './gadget/TriBurndownGadgetEdit';
+import TriScopeChangeGadgetView from './gadget/TriScopeChangeGadgetView';
+import TriScopeChangeGadgetEdit from './gadget/TriScopeChangeGadgetEdit';
 
 const GADGETS = {
   'sprint-tri-burndown-gadget': { view: TriBurndownGadgetView, edit: TriBurndownGadgetEdit },
+  'sprint-tri-scope-change-gadget': { view: TriScopeChangeGadgetView, edit: TriScopeChangeGadgetEdit },
 };
 
 async function bootstrap() {
