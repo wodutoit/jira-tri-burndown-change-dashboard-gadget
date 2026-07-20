@@ -137,6 +137,7 @@ TRI Cycle Time adds **Hours per Story Point** (default 4h = 1 SP) and a **Busine
 - The sprint picker uses the project's first board. If a project has multiple boards, only the first one returned by Jira is used.
 - The project picker fetches up to 100 projects in one page — add pagination if your site has more.
 - Business-hours math (TRI Cycle Time) uses a single fixed UTC offset, not a real IANA timezone — no daylight-saving transitions.
+- `getSprintRawData` (`src/index.js`) paginates through every issue in a sprint with its full changelog, with no cap on issue count or page count. Tested and confirmed working with a ~100-issue sprint. Larger sprints (or issues with very long changelog histories) will take proportionally longer to fetch on a cache miss, and could risk hitting the Forge function execution time limit — if you regularly run sprints much larger than ~100 issues, test against one before relying on this in production.
 
 ## How the multi-gadget pattern works
 
