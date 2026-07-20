@@ -10,7 +10,7 @@ modules:
       title: TRI Burndown
       description: Sprint burndown tracking dev complete, review complete and
         test complete (ideal, dev remaining, review remaining, remaining).
-      thumbnail: icons/tri-burndown.svg
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v1/static/gadgets/public/icons/tri-burndown.svg
       resource: main
       resolver:
         function: resolver
@@ -21,7 +21,7 @@ modules:
       title: TRI Scope Change
       description: Sprint scope change tracking — daily net SP change chart or
         a table of individual add/remove/excluded events.
-      thumbnail: icons/tri-scope-change.svg
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v1/static/gadgets/public/icons/tri-scope-change.svg
       resource: main
       resolver:
         function: resolver
@@ -32,7 +32,7 @@ modules:
       title: TRI Rework
       description: Sprint rework tracking — daily test-failure kickback count
         chart or a table of individual rework events.
-      thumbnail: icons/tri-rework.svg
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v1/static/gadgets/public/icons/tri-rework.svg
       resource: main
       resolver:
         function: resolver
@@ -43,7 +43,7 @@ modules:
       title: TRI Cycle Time
       description: Cycle time per item — business hours spent in In Progress,
         Blocked, Code Review and Test, with estimate-vs-actual highlighting.
-      thumbnail: icons/tri-cycle-time.svg
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v1/static/gadgets/public/icons/tri-cycle-time.svg
       resource: main
       resolver:
         function: resolver
