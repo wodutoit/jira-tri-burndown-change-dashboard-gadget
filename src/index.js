@@ -149,6 +149,26 @@ async function resolveSprint({ projectKey, sprintMode, sprintId }) {
   return { sprint: await sprintRes.json() };
 }
 
+// Space (project) display name never appears in the sprint payload, so fetch
+// it separately for the widget header. Cached indefinitely — project names
+// rarely change and this is a single cheap GET.
+async function getSpaceName(projectKey) {
+  const cacheKey = `space-name:${projectKey}`;
+  try {
+    const cached = await storage.get(cacheKey);
+    if (cached) return cached;
+  } catch (_) {}
+
+  const res = await asUser().requestJira(
+    route`/rest/api/3/project/${projectKey}`,
+    { headers: { Accept: 'application/json' } }
+  );
+  const name = res.ok ? (await res.json()).name : projectKey;
+
+  try { await storage.set(cacheKey, name); } catch (_) {}
+  return name;
+}
+
 // ── Shared: fetch + cache raw per-sprint issue/changelog data ─────────────────
 // This is the expensive part (pagination + full changelog per issue) and is
 // identical for every widget looking at the same sprint + SP field, regardless
@@ -219,8 +239,8 @@ function extractRawSprintData(sprintId, issues, spFieldId) {
         }
       }
     }
-    transitions.sort((a, b) => a.ts.localeCompare(b.ts));
-    sprintEvents.sort((a, b) => a.ts.localeCompare(b.ts));
+    transitions.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    sprintEvents.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
 
     issueData[issue.key] = {
       sp: typeof sp === 'number' ? sp : 0,
@@ -272,10 +292,17 @@ function getBusinessDays(startDateStr, endDateStr) {
   return days;
 }
 
-function snapToBizDay(isoStr, bizDays) {
-  const d = isoStr.slice(0, 10);
-  if (bizDays.includes(d)) return d;
-  return bizDays.find(b => b >= d) ?? bizDays[bizDays.length - 1];
+// Match the reference script's snap_to_biz_day: only roll Saturday/Sunday
+// forward to Monday. Weekday dates that fall BEFORE the sprint start are
+// returned as-is (outside bizDays), so they're never applied to running scope.
+// This prevents pre-sprint "added" events from being mapped to day 1 and
+// double-counting SP that's already in initialScope.
+function snapToBizDay(isoStr) {
+  const d = new Date(isoStr.slice(0, 10) + 'T12:00:00Z');
+  const dow = d.getUTCDay();
+  if (dow === 6) d.setUTCDate(d.getUTCDate() + 2); // Saturday → Monday
+  if (dow === 0) d.setUTCDate(d.getUTCDate() + 1); // Sunday   → Monday
+  return d.toISOString().slice(0, 10);
 }
 
 function dayLabel(dayStr) {
@@ -284,10 +311,18 @@ function dayLabel(dayStr) {
 
 // Computes: committed (grace-window) scope, per-day net delta, and the first
 // "excluded"/removed timestamp per issue (used to gate later calcs).
-function computeScopeFoundation(sprint, issueData, statusMapping, bizDays) {
+//
+// graceWindowHours defines "committed": anything added to the sprint within
+// that many hours of sprint.startDate counts as committed scope rather than
+// mid-sprint scope creep. Default 12h matches the reference tool, but this
+// only works if startDate reflects when the sprint was actually started. If
+// a sprint's start date was backdated (started late, with an earlier date
+// entered in the Start Sprint dialog), widen this to cover the gap between
+// the entered start date and the real planning/activation date.
+function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, graceWindowHours = 12) {
   const startDate = bizDays[0];
   const endDate   = bizDays[bizDays.length - 1];
-  const graceCutoffISO = new Date(new Date(sprint.startDate).getTime() + 12 * 3600 * 1000).toISOString();
+  const graceCutoffMs = new Date(sprint.startDate).getTime() + graceWindowHours * 3600 * 1000;
 
   const initialCommitted = {};
   const scopeDeltaByDay  = {};
@@ -305,18 +340,17 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays) {
     if (firstRemove) removedTsByKey[key] = firstRemove.ts;
 
     // Committed scope: in sprint from the start (no add event, or created before
-    // the sprint even existed) or added within the 12h grace window.
+    // the sprint even existed) or added within the grace window.
     const addTs = firstAdd?.ts ?? issue.created;
-    if (!addTs || addTs <= graceCutoffISO) {
+    if (!addTs || Date.parse(addTs) <= graceCutoffMs) {
       initialCommitted[key] = sp;
     }
 
-    // Every add/remove event nudges the running scope on the day it happened —
-    // mirrors the reference tool bucketing ALL membership-change events, not
-    // just the first (a ticket can be added, dropped, and re-added).
+    // Every add/remove event nudges the running scope on the day it happened.
+    // snapToBizDay only rolls weekends → Monday; pre-sprint weekday events
+    // return a date before startDate and are filtered out by addDelta's range check.
     for (const ev of issue.sprintEvents) {
-      const day = snapToBizDay(ev.ts, bizDays);
-      addDelta(day, ev.type === 'added' ? sp : -sp);
+      addDelta(snapToBizDay(ev.ts), ev.type === 'added' ? sp : -sp);
     }
 
     // First transition into an "excluded" status (e.g. "Not Required") removes
@@ -324,28 +358,33 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays) {
     const nrTrans = issue.transitions.find(t => statusMapping[t.to] === 'excluded');
     if (nrTrans) {
       nrTsByKey[key] = nrTrans.ts;
-      addDelta(snapToBizDay(nrTrans.ts, bizDays), -sp);
+      addDelta(snapToBizDay(nrTrans.ts), -sp);
     }
   }
 
   const initialScope = Object.values(initialCommitted).reduce((s, v) => s + v, 0);
-  return { initialScope, scopeDeltaByDay, removedTsByKey, nrTsByKey, graceCutoffISO };
+  return { initialScope, scopeDeltaByDay, removedTsByKey, nrTsByKey, graceCutoffMs };
 }
 
 // ── TRI-Burndown: ideal / dev remaining / review remaining / remaining ───────
 
-function computeBurndown(sprint, issueData, statusMapping) {
+function computeBurndown(sprint, issueData, statusMapping, graceWindowHours, clientTodayISO) {
   const startDate = sprint.startDate?.slice(0, 10);
   const endDate   = sprint.endDate?.slice(0, 10);
   if (!startDate || !endDate) return null;
 
-  const todayISO      = new Date().toISOString().slice(0, 10);
+  // Resolver functions run server-side in UTC, so "today" per new Date() can
+  // lag a calendar day behind for sites east of UTC (e.g. still "yesterday"
+  // in UTC during the morning in Sydney/AEST), silently chopping today off
+  // the chart. The browser knows the viewer's actual local calendar date, so
+  // prefer that when the frontend supplies it.
+  const todayISO      = clientTodayISO || new Date().toISOString().slice(0, 10);
   const effectiveEnd  = todayISO < endDate ? todayISO : endDate;
   const bizDays       = getBusinessDays(startDate, endDate);
   if (!bizDays.length) return null;
 
   const { initialScope, scopeDeltaByDay, removedTsByKey, nrTsByKey } =
-    computeScopeFoundation(sprint, issueData, statusMapping, bizDays);
+    computeScopeFoundation(sprint, issueData, statusMapping, bizDays, graceWindowHours);
 
   const allKeys = Object.keys(issueData);
   const n = bizDays.length;
@@ -357,12 +396,12 @@ function computeBurndown(sprint, issueData, statusMapping) {
     if (t) doneTsByKey[key] = t.ts;
   }
 
-  function statusAt(key, eodISO) {
+  function statusAt(key, eodMs) {
     const trans = issueData[key].transitions;
     if (!trans.length) return 'unknown';
     let st = trans[0].from || 'unknown';
     for (const t of trans) {
-      if (t.ts <= eodISO) st = t.to;
+      if (Date.parse(t.ts) <= eodMs) st = t.to;
       else break;
     }
     return st;
@@ -390,18 +429,18 @@ function computeBurndown(sprint, issueData, statusMapping) {
       continue;
     }
 
-    const eod = day + 'T23:59:59.999Z';
+    const eodMs = Date.parse(day + 'T23:59:59.999Z');
     let doneSp = 0, devSp = 0, reviewSp = 0;
 
     for (const key of allKeys) {
       const sp = issueData[key].sp || 0;
       if (!sp) continue;
-      if (nrTsByKey[key]      && nrTsByKey[key]      <= eod) continue;
-      if (removedTsByKey[key] && removedTsByKey[key] <= eod) continue;
+      if (nrTsByKey[key]      && Date.parse(nrTsByKey[key])      <= eodMs) continue;
+      if (removedTsByKey[key] && Date.parse(removedTsByKey[key]) <= eodMs) continue;
 
-      if (doneTsByKey[key] && doneTsByKey[key] <= eod) doneSp += sp;
+      if (doneTsByKey[key] && Date.parse(doneTsByKey[key]) <= eodMs) doneSp += sp;
 
-      const phase = statusMapping[statusAt(key, eod)] || 'backlog';
+      const phase = statusMapping[statusAt(key, eodMs)] || 'backlog';
       if (phase === 'review' || phase === 'test' || phase === 'done') devSp    += sp;
       if (phase === 'test'   || phase === 'done')                     reviewSp += sp;
     }
@@ -427,7 +466,7 @@ function computeBurndown(sprint, issueData, statusMapping) {
 }
 
 resolver.define('getBurndownData', async ({ payload }) => {
-  const { sprintMode, sprintId, spFieldId, statusMapping, projectKey, forceRefresh } = payload ?? {};
+  const { sprintMode, sprintId, spFieldId, statusMapping, projectKey, forceRefresh, graceWindowHours, todayISO } = payload ?? {};
   if (!spFieldId || !statusMapping || !projectKey || (sprintMode !== 'active' && !sprintId)) {
     return { error: 'Missing required config.' };
   }
@@ -443,15 +482,16 @@ resolver.define('getBurndownData', async ({ payload }) => {
     return { error: e.message };
   }
 
-  const data = computeBurndown(sprint, issueData, statusMapping);
+  const data = computeBurndown(sprint, issueData, statusMapping, graceWindowHours, todayISO);
   if (!data) return { error: 'Could not compute burndown — check sprint dates.' };
+  data.spaceName = await getSpaceName(projectKey);
 
   return { data, fromCache };
 });
 
 // ── TRI-Scope-Change: daily scope-delta chart + Sprint Change Events table ────
 
-function computeScopeChangeData(sprint, issueData, statusMapping) {
+function computeScopeChangeData(sprint, issueData, statusMapping, graceWindowHours) {
   const startDate = sprint.startDate?.slice(0, 10);
   const endDate   = sprint.endDate?.slice(0, 10);
   if (!startDate || !endDate) return null;
@@ -460,7 +500,7 @@ function computeScopeChangeData(sprint, issueData, statusMapping) {
   if (!bizDays.length) return null;
 
   const { initialScope, scopeDeltaByDay } =
-    computeScopeFoundation(sprint, issueData, statusMapping, bizDays);
+    computeScopeFoundation(sprint, issueData, statusMapping, bizDays, graceWindowHours);
 
   const labels = bizDays.map(dayLabel);
   const scopeDelta = bizDays.map(day => scopeDeltaByDay[day] || 0);
@@ -495,6 +535,76 @@ function computeScopeChangeData(sprint, issueData, statusMapping) {
 }
 
 resolver.define('getScopeChangeData', async ({ payload }) => {
+  const { sprintMode, sprintId, spFieldId, statusMapping, projectKey, forceRefresh, graceWindowHours } = payload ?? {};
+  if (!spFieldId || !statusMapping || !projectKey || (sprintMode !== 'active' && !sprintId)) {
+    return { error: 'Missing required config.' };
+  }
+
+  const resolved = await resolveSprint({ projectKey, sprintMode, sprintId });
+  if (resolved.error) return { error: resolved.error };
+  const sprint = resolved.sprint;
+
+  let issueData, fromCache;
+  try {
+    ({ issueData, fromCache } = await getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh }));
+  } catch (e) {
+    return { error: e.message };
+  }
+
+  const data = computeScopeChangeData(sprint, issueData, statusMapping, graceWindowHours);
+  if (!data) return { error: 'Could not compute scope changes — check sprint dates.' };
+  data.spaceName = await getSpaceName(projectKey);
+
+  return { data, fromCache };
+});
+
+// ── TRI-Rework: daily rework-event chart + Sprint Rework Events table ────────
+// Rework = a ticket leaving a 'test'-phase status to anywhere other than
+// 'done' or 'excluded' (e.g. Testing kicked back to In Progress) — a test
+// failure sending work back, not a cancellation.
+
+function computeReworkData(sprint, issueData, statusMapping) {
+  const startDate = sprint.startDate?.slice(0, 10);
+  const endDate   = sprint.endDate?.slice(0, 10);
+  if (!startDate || !endDate) return null;
+
+  const bizDays = getBusinessDays(startDate, endDate);
+  if (!bizDays.length) return null;
+
+  const reworkCountByDay = {};
+  const addCount = (day) => {
+    if (day >= startDate && day <= endDate) reworkCountByDay[day] = (reworkCountByDay[day] || 0) + 1;
+  };
+
+  const events = [];
+  for (const [key, issue] of Object.entries(issueData)) {
+    const sp = issue.sp || 0;
+    for (const t of issue.transitions) {
+      const fromPhase = statusMapping[t.from];
+      const toPhase   = statusMapping[t.to];
+      if (fromPhase === 'test' && toPhase !== 'done' && toPhase !== 'excluded') {
+        events.push({ key, ts: t.ts, sp });
+        addCount(snapToBizDay(t.ts));
+      }
+    }
+  }
+  events.sort((a, b) => a.key.localeCompare(b.key));
+
+  const labels = bizDays.map(dayLabel);
+  const reworkCount = bizDays.map(day => reworkCountByDay[day] || 0);
+
+  return {
+    labels,
+    reworkCount,
+    events,
+    sprintName:  sprint.name,
+    sprintState: sprint.state,
+    startDate,
+    endDate,
+  };
+}
+
+resolver.define('getReworkData', async ({ payload }) => {
   const { sprintMode, sprintId, spFieldId, statusMapping, projectKey, forceRefresh } = payload ?? {};
   if (!spFieldId || !statusMapping || !projectKey || (sprintMode !== 'active' && !sprintId)) {
     return { error: 'Missing required config.' };
@@ -511,8 +621,151 @@ resolver.define('getScopeChangeData', async ({ payload }) => {
     return { error: e.message };
   }
 
-  const data = computeScopeChangeData(sprint, issueData, statusMapping);
-  if (!data) return { error: 'Could not compute scope changes — check sprint dates.' };
+  const data = computeReworkData(sprint, issueData, statusMapping);
+  if (!data) return { error: 'Could not compute rework events — check sprint dates.' };
+  data.spaceName = await getSpaceName(projectKey);
+
+  return { data, fromCache };
+});
+
+// ── TRI-Cycle-Time: "Cycle Time Per Item" table ───────────────────────────────
+// Tracks business hours (configurable working-hours window + UTC offset) spent
+// in each of 4 buckets — In Progress, Blocked, Code Review, Test — per issue,
+// converted to a story-point-equivalent for estimate-vs-actual comparison.
+
+// Business hours between two instants within a fixed daily working window.
+// The offset is a constant (no DST), so shifting both instants by it and
+// treating the result as UTC gives correct local weekday/hour-of-day math —
+// the same trick used by snapToBizDay elsewhere in this file.
+function businessHoursBetween(startTs, endTs, workStartHour, workEndHour, utcOffsetHours) {
+  const start = Date.parse(startTs);
+  const end   = Date.parse(endTs);
+  if (!start || !end || end <= start) return 0;
+
+  const offsetMs = utcOffsetHours * 3600 * 1000;
+  const startLocal = start + offsetMs;
+  const endLocal   = end + offsetMs;
+  const DAY_MS = 86400000;
+
+  let total = 0;
+  let dayStartLocal = Math.floor(startLocal / DAY_MS) * DAY_MS;
+  const lastDayLocal = Math.floor(endLocal / DAY_MS) * DAY_MS;
+
+  while (dayStartLocal <= lastDayLocal) {
+    const dow = new Date(dayStartLocal).getUTCDay();
+    if (dow !== 0 && dow !== 6) {
+      const windowStart = dayStartLocal + workStartHour * 3600 * 1000;
+      const windowEnd   = dayStartLocal + workEndHour * 3600 * 1000;
+      const segStart = Math.max(startLocal, windowStart);
+      const segEnd   = Math.min(endLocal, windowEnd);
+      if (segEnd > segStart) total += (segEnd - segStart) / 3600000;
+    }
+    dayStartLocal += DAY_MS;
+  }
+  return total;
+}
+
+function nearestFibonacci(value) {
+  if (value <= 0) return 0;
+  const fibs = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89];
+  while (fibs[fibs.length - 1] < value) fibs.push(fibs[fibs.length - 1] + fibs[fibs.length - 2]);
+  return fibs.reduce((best, f) => (Math.abs(f - value) < Math.abs(best - value) ? f : best), fibs[0]);
+}
+
+const CYCLE_TIME_BUCKETS = { dev: 'inProgress', blocked: 'blocked', review: 'codeReview', test: 'test' };
+
+function computeCycleTimeData(sprint, issueData, statusMapping, opts) {
+  const { hoursPerSp, workStartHour, workEndHour, utcOffsetHours } = opts;
+  const sprintEndMs = Date.parse(sprint.endDate);
+  const nowMs = Date.now();
+  const effectiveNowMs = (sprintEndMs && sprintEndMs < nowMs) ? sprintEndMs : nowMs;
+
+  const rows = [];
+  for (const [key, issue] of Object.entries(issueData).sort((a, b) => a[0].localeCompare(b[0]))) {
+    const totalsHours = { inProgress: 0, blocked: 0, codeReview: 0, test: 0 };
+    const trans = issue.transitions;
+
+    if (trans.length) {
+      const segments = [];
+
+      // Pre-first-transition segment (creation -> first transition), only when
+      // the initial status is untracked — otherwise a truncated changelog could
+      // silently dump pre-sprint backlog time into a tracked bucket.
+      const first = trans[0];
+      if (issue.created && first.ts && Date.parse(first.ts) > Date.parse(issue.created) &&
+          !CYCLE_TIME_BUCKETS[statusMapping[first.from]]) {
+        segments.push({ status: first.from, start: issue.created, end: first.ts });
+      }
+
+      for (let i = 0; i < trans.length - 1; i++) {
+        segments.push({ status: trans[i].to, start: trans[i].ts, end: trans[i + 1].ts });
+      }
+
+      const last = trans[trans.length - 1];
+      if (statusMapping[last.to] !== 'done') {
+        segments.push({ status: last.to, start: last.ts, end: new Date(effectiveNowMs).toISOString() });
+      }
+
+      for (const seg of segments) {
+        const bucket = CYCLE_TIME_BUCKETS[statusMapping[seg.status]];
+        if (bucket) totalsHours[bucket] += businessHoursBetween(seg.start, seg.end, workStartHour, workEndHour, utcOffsetHours);
+      }
+    }
+
+    const bucketData = {};
+    for (const bucket of Object.values(CYCLE_TIME_BUCKETS)) {
+      const hours = totalsHours[bucket];
+      bucketData[bucket] = { hours, sp: hours ? nearestFibonacci(hours / hoursPerSp) : 0 };
+    }
+
+    // Total Cycle Time SP deliberately excludes Blocked — waiting isn't work.
+    const totalCycleTimeSp = bucketData.inProgress.sp + bucketData.codeReview.sp + bucketData.test.sp;
+
+    rows.push({
+      key,
+      spEstimate: issue.sp || null,
+      totalCycleTimeSp: totalCycleTimeSp || null,
+      ...bucketData,
+    });
+  }
+
+  return {
+    rows,
+    sprintName:  sprint.name,
+    sprintState: sprint.state,
+    startDate: sprint.startDate?.slice(0, 10),
+    endDate:   sprint.endDate?.slice(0, 10),
+  };
+}
+
+resolver.define('getCycleTimeData', async ({ payload }) => {
+  const {
+    sprintMode, sprintId, spFieldId, statusMapping, projectKey, forceRefresh,
+    hoursPerSp, workStartHour, workEndHour, utcOffsetHours,
+  } = payload ?? {};
+  if (!spFieldId || !statusMapping || !projectKey || (sprintMode !== 'active' && !sprintId)) {
+    return { error: 'Missing required config.' };
+  }
+
+  const resolved = await resolveSprint({ projectKey, sprintMode, sprintId });
+  if (resolved.error) return { error: resolved.error };
+  const sprint = resolved.sprint;
+
+  let issueData, fromCache;
+  try {
+    ({ issueData, fromCache } = await getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh }));
+  } catch (e) {
+    return { error: e.message };
+  }
+
+  const numOr = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+  const data = computeCycleTimeData(sprint, issueData, statusMapping, {
+    hoursPerSp:     numOr(hoursPerSp, 4) || 4,
+    workStartHour:  numOr(workStartHour, 9),
+    workEndHour:    numOr(workEndHour, 17),
+    utcOffsetHours: numOr(utcOffsetHours, 10),
+  });
+  data.spaceName = await getSpaceName(projectKey);
 
   return { data, fromCache };
 });

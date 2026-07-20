@@ -4,7 +4,7 @@ export const DEFAULT_PHASE_MAP = {
   'Team Estimated': 'backlog',
   'Open':           'backlog',
   'In Progress':    'dev',
-  'Blocked':        'dev',
+  'Blocked':        'blocked',
   'Code Review':    'review',
   'Testing':        'test',
   'Test Design':    'test',
@@ -14,8 +14,9 @@ export const DEFAULT_PHASE_MAP = {
 };
 
 export const PHASE_OPTIONS = [
-  { value: 'backlog',  label: 'Backlog (pre-dev)' },
-  { value: 'dev',      label: 'Dev' },
+  { value: 'backlog',  label: 'To Do' },
+  { value: 'dev',      label: 'In Progress' },
+  { value: 'blocked',  label: 'Blocked' },
   { value: 'review',   label: 'Review (Code Review)' },
   { value: 'test',     label: 'Test' },
   { value: 'done',     label: 'Done' },
@@ -44,5 +45,34 @@ export function Section({ title, children, disabled }) {
       <div style={editStyles.label}>{title}</div>
       {children}
     </div>
+  );
+}
+
+export const DISPLAY_MODE_OPTIONS = [
+  { value: 'chart',      label: 'Chart' },
+  { value: 'table',      label: 'Table' },
+  { value: 'both-2col',  label: 'Both — side by side' },
+  { value: 'both-1col',  label: 'Both — stacked' },
+];
+
+// Shared "Display As" section used by every gadget with a chart-or-table
+// config choice. `hint` describes what the chart/table actually show for
+// that specific widget.
+export function DisplayModeSection({ title, displayMode, setDisplayMode, hint }) {
+  return (
+    <Section title={title}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {DISPLAY_MODE_OPTIONS.map(o => (
+          <label key={o.value} style={editStyles.radioLabel}>
+            <input type="radio" name="displayMode" value={o.value} checked={displayMode === o.value}
+                   onChange={() => setDisplayMode(o.value)} />
+            {o.label}
+          </label>
+        ))}
+      </div>
+      <div style={editStyles.hint}>
+        {hint} "Side by side" shows chart and table in two columns that stack into one on narrow screens. When showing just one of Chart or Table, a toggle next to the Refresh button lets you switch between them while viewing.
+      </div>
+    </Section>
   );
 }

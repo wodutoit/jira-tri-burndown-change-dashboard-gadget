@@ -4,6 +4,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
+import { localTodayISO } from './gadgetUtils';
 
 const COLORS = {
   ideal:     '#6B7280',
@@ -66,11 +67,13 @@ export default function TriBurndownGadgetView() {
   async function fetchData(cfg, forceRefresh = false) {
     if (forceRefresh) setRefreshing(true);
     const result = await invoke('getBurndownData', {
-      projectKey:    cfg.projectKey,
-      sprintMode:    cfg.sprintMode ?? 'active',
-      sprintId:      cfg.sprintId ?? null,
-      spFieldId:     cfg.spFieldId,
-      statusMapping: cfg.statusMapping,
+      projectKey:       cfg.projectKey,
+      sprintMode:       cfg.sprintMode ?? 'active',
+      sprintId:         cfg.sprintId ?? null,
+      spFieldId:        cfg.spFieldId,
+      statusMapping:    cfg.statusMapping,
+      graceWindowHours: cfg.graceWindowHours,
+      todayISO:         localTodayISO(),
       forceRefresh,
     });
     if (result.error) throw new Error(result.error);
@@ -135,7 +138,7 @@ export default function TriBurndownGadgetView() {
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
         <div>
-          <div style={{ fontSize: 14, fontWeight: 700 }}>{data.sprintName}</div>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{data.spaceName ? `${data.spaceName}: ${data.sprintName}` : data.sprintName}</div>
           <div style={{ fontSize: 11, color: 'var(--text-subtlest)' }}>
             {data.startDate} – {data.endDate}
             {fromCache && !refreshing && <span style={{ marginLeft: 8, opacity: 0.6 }}>· cached</span>}

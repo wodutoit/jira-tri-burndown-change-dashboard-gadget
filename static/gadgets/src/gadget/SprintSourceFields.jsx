@@ -6,9 +6,9 @@ import { editStyles as S, Section, PHASE_OPTIONS } from './sprintConfigShared';
 // this component is purely presentational.
 export default function SprintSourceFields({
   projects, fields, sprints, statuses,
-  projectKey, sprintId, spFieldId, statusMapping,
+  projectKey, sprintId, spFieldId, statusMapping, graceWindowHours,
   sprintsLoading, statusesLoading,
-  onProjectChange, setSprintId, setSpFieldId, setStatusMapping,
+  onProjectChange, setSprintId, setSpFieldId, setStatusMapping, setGraceWindowHours,
 }) {
   return (
     <>
@@ -82,6 +82,21 @@ export default function SprintSourceFields({
           )
         }
         <div style={S.hint}>Assign each status to a burndown phase. <b>Excluded</b> statuses are removed from scope (like "Not Required").</div>
+      </Section>
+
+      <div style={S.divider} />
+
+      <Section title="5. Commitment Grace Window" disabled={!projectKey}>
+        <input
+          type="number"
+          min="1"
+          value={graceWindowHours}
+          onChange={e => setGraceWindowHours(e.target.value)}
+          style={{ ...S.select, width: 100 }}
+        /> hours
+        <div style={S.hint}>
+          Tickets added to the sprint within this many hours of the sprint's start date count as "committed" scope; anything later counts as mid-sprint scope change. Default 12h assumes the sprint's start date reflects when it was actually started. If you started the sprint later than its recorded start date (e.g. a backdated start date), widen this to cover the gap — otherwise tickets set up in that gap won't count as committed.
+        </div>
       </Section>
     </>
   );

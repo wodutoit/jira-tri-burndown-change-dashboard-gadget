@@ -4,7 +4,7 @@ import { editStyles as S, DisplayModeSection } from './sprintConfigShared';
 import { useSprintSourceConfig } from './useSprintSourceConfig';
 import SprintSourceFields from './SprintSourceFields';
 
-export default function TriScopeChangeGadgetEdit() {
+export default function TriReworkGadgetEdit() {
   const cfg = useSprintSourceConfig();
   const [displayMode, setDisplayMode] = useState('chart');
   const [saving, setSaving] = useState(false);
@@ -39,7 +39,7 @@ export default function TriScopeChangeGadgetEdit() {
         title="6. Display As"
         displayMode={displayMode}
         setDisplayMode={setDisplayMode}
-        hint='Chart shows daily net scope change (SP). Table lists every add/remove/excluded event ("Sprint Change Events").'
+        hint='Chart shows daily rework event count. Table lists every rework event ("Sprint Rework Events") — a ticket leaving a Test-phase status to anywhere other than Done.'
       />
 
       <div style={S.divider} />

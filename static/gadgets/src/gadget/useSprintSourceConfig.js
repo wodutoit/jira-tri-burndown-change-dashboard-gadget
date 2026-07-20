@@ -16,6 +16,7 @@ export function useSprintSourceConfig() {
   const [sprintId, setSprintId]           = useState('active');
   const [spFieldId, setSpFieldId]         = useState('');
   const [statusMapping, setStatusMapping] = useState({});
+  const [graceWindowHours, setGraceWindowHours] = useState(12);
 
   const [loading, setLoading]                 = useState(true);
   const [sprintsLoading, setSprintsLoading]   = useState(false);
@@ -51,6 +52,7 @@ export function useSprintSourceConfig() {
       const cfg = ctx?.extension?.gadgetConfiguration ?? {};
       setInitialConfig(cfg);
       if (cfg.spFieldId) setSpFieldId(cfg.spFieldId);
+      if (cfg.graceWindowHours) setGraceWindowHours(cfg.graceWindowHours);
 
       if (cfg.projectKey) {
         setProjectKey(cfg.projectKey);
@@ -96,14 +98,15 @@ export function useSprintSourceConfig() {
       sprintName: sprint?.name ?? '',
       spFieldId,
       statusMapping,
+      graceWindowHours: Number(graceWindowHours) || 12,
     };
   }
 
   return {
     projects, fields, sprints, statuses,
-    projectKey, sprintId, spFieldId, statusMapping,
+    projectKey, sprintId, spFieldId, statusMapping, graceWindowHours,
     loading, sprintsLoading, statusesLoading, error, initialConfig,
-    setSprintId, setSpFieldId, setStatusMapping,
+    setSprintId, setSpFieldId, setStatusMapping, setGraceWindowHours,
     onProjectChange, canSave, getSourcePayload,
   };
 }

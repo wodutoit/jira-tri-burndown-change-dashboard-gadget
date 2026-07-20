@@ -7,7 +7,7 @@
 modules:
   jira:dashboardGadget:
     - key: sprint-tri-burndown-gadget
-      title: TRI-Burndown
+      title: TRI Burndown
       description: Sprint burndown tracking dev complete, review complete and
         test complete (ideal, dev remaining, review remaining, remaining).
       thumbnail: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
@@ -18,9 +18,31 @@ modules:
         resource: main
 
     - key: sprint-tri-scope-change-gadget
-      title: TRI-Scope-Change
+      title: TRI Scope Change
       description: Sprint scope change tracking — daily net SP change chart or
         a table of individual add/remove/excluded events.
+      thumbnail: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
+    - key: sprint-tri-rework-gadget
+      title: TRI Rework
+      description: Sprint rework tracking — daily test-failure kickback count
+        chart or a table of individual rework events.
+      thumbnail: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
+    - key: sprint-tri-cycle-time-gadget
+      title: TRI Cycle Time
+      description: Cycle time per item — business hours spent in In Progress,
+        Blocked, Code Review and Test, with estimate-vs-actual highlighting.
       thumbnail: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
       resource: main
       resolver:

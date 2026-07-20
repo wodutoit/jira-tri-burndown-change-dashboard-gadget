@@ -2,13 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { invoke, view } from '@forge/bridge';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Cell,
+  Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { useDisplayMode, bothLayoutStyle } from './useDisplayMode';
 
-const AMBER = '#EAAB30';
-const AMBER_HDR = '#FFC000';
-const NEGATIVE = '#B4B2A9';
+const RED = '#E36B5A';
+const RED_HDR = '#C00000';
+const RED_ZEBRA = '#FCE4D633';
 
 function fmtEventDate(ts) {
   if (!ts) return '';
@@ -19,17 +19,16 @@ function fmtEventDate(ts) {
 
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
-  const v = payload[0].value;
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4, padding: '6px 10px', fontSize: 12 }}>
       <div style={{ fontWeight: 700, color: 'var(--text)' }}>{label}</div>
-      <div style={{ color: v >= 0 ? AMBER : NEGATIVE }}>{v >= 0 ? '+' : ''}{v} SP</div>
+      <div style={{ color: RED }}>{payload[0].value} rework event{payload[0].value === 1 ? '' : 's'}</div>
     </div>
   );
 }
 
-function ScopeChart({ data }) {
-  const chartData = data.labels.map((label, i) => ({ label, delta: data.scopeDelta[i] }));
+function ReworkChart({ data }) {
+  const chartData = data.labels.map((label, i) => ({ label, count: data.reworkCount[i] }));
   return (
     <ResponsiveContainer width="100%" height={220}>
       <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: -10 }}>
@@ -37,11 +36,7 @@ function ScopeChart({ data }) {
         <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'var(--text-subtlest)' }} interval="preserveStartEnd" />
         <YAxis tick={{ fontSize: 10, fill: 'var(--text-subtlest)' }} allowDecimals={false} />
         <Tooltip content={<CustomTooltip />} />
-        <Bar dataKey="delta">
-          {chartData.map((d, i) => (
-            <Cell key={i} fill={d.delta >= 0 ? AMBER : NEGATIVE} />
-          ))}
-        </Bar>
+        <Bar dataKey="count" fill={RED} />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -50,16 +45,13 @@ function ScopeChart({ data }) {
 function EventsTable({ events }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
-      <div style={{ fontSize: 11, color: 'var(--text-subtlest)', fontStyle: 'italic', marginBottom: 8, lineHeight: 1.4 }}>
-        Events may have occurred outside the bounds of the current sprint and won't be reflected in the chart above — check the date column.
-      </div>
       <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr>
               {['Issue ID', 'Date', 'SP'].map(h => (
                 <th key={h} style={{
-                  background: AMBER_HDR, color: '#1F2422', fontWeight: 700, textAlign: h === 'Issue ID' ? 'left' : 'center',
+                  background: RED_HDR, color: '#FFFFFF', fontWeight: 700, textAlign: h === 'Issue ID' ? 'left' : 'center',
                   padding: '6px 10px', position: 'sticky', top: 0,
                 }}>{h}</th>
               ))}
@@ -67,14 +59,14 @@ function EventsTable({ events }) {
           </thead>
           <tbody>
             {events.length === 0 && (
-              <tr><td colSpan={3} style={{ padding: 10, textAlign: 'center', color: 'var(--text-subtlest)', fontStyle: 'italic' }}>No scope change events.</td></tr>
+              <tr><td colSpan={3} style={{ padding: 10, textAlign: 'center', color: 'var(--text-subtlest)', fontStyle: 'italic' }}>No rework events.</td></tr>
             )}
             {events.map((ev, i) => (
-              <tr key={i} style={{ background: i % 2 === 1 ? 'var(--surface-sunken)' : 'transparent' }}>
+              <tr key={i} style={{ background: i % 2 === 1 ? RED_ZEBRA : 'transparent' }}>
                 <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)' }}>{ev.key}</td>
                 <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center' }}>{fmtEventDate(ev.ts)}</td>
-                <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center', color: ev.sp >= 0 ? AMBER : 'var(--text)', fontWeight: 600 }}>
-                  {ev.sp >= 0 ? '+' : ''}{ev.sp}
+                <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center', fontWeight: 600 }}>
+                  {ev.sp}
                 </td>
               </tr>
             ))}
@@ -85,7 +77,7 @@ function EventsTable({ events }) {
   );
 }
 
-export default function TriScopeChangeGadgetView() {
+export default function TriReworkGadgetView() {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState(null);
   const [data, setData]           = useState(null);
@@ -96,13 +88,12 @@ export default function TriScopeChangeGadgetView() {
 
   async function fetchData(cfg, forceRefresh = false) {
     if (forceRefresh) setRefreshing(true);
-    const result = await invoke('getScopeChangeData', {
-      projectKey:       cfg.projectKey,
-      sprintMode:       cfg.sprintMode ?? 'active',
-      sprintId:         cfg.sprintId ?? null,
-      spFieldId:        cfg.spFieldId,
-      statusMapping:    cfg.statusMapping,
-      graceWindowHours: cfg.graceWindowHours,
+    const result = await invoke('getReworkData', {
+      projectKey:    cfg.projectKey,
+      sprintMode:    cfg.sprintMode ?? 'active',
+      sprintId:      cfg.sprintId ?? null,
+      spFieldId:     cfg.spFieldId,
+      statusMapping: cfg.statusMapping,
       forceRefresh,
     });
     if (result.error) throw new Error(result.error);
@@ -189,11 +180,11 @@ export default function TriScopeChangeGadgetView() {
 
       {isBoth ? (
         <div style={isTwoCol ? bothLayoutStyle.twoCol : bothLayoutStyle.oneCol}>
-          <ScopeChart data={data} />
+          <ReworkChart data={data} />
           <EventsTable events={data.events} />
         </div>
       ) : (
-        viewMode === 'table' ? <EventsTable events={data.events} /> : <ScopeChart data={data} />
+        viewMode === 'table' ? <EventsTable events={data.events} /> : <ReworkChart data={data} />
       )}
     </div>
   );
