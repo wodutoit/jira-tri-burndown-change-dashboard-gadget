@@ -11,6 +11,8 @@ A standalone Atlassian Forge app providing four Jira dashboard gadgets for sprin
 
 All four are ports of a reference Python reporting script (issue-changelog analysis + Excel dashboard) into live, self-configuring Jira gadgets. This project has no dependency on any other repo or app — it's a complete, self-contained Forge app you can `forge register` and deploy on its own.
 
+This README is for developers working on the code. If you just want to add and configure these gadgets on your own dashboard, see **[USAGE.md](USAGE.md)** instead.
+
 ## Stack
 
 - **Backend**: Node.js Forge resolver (`src/index.js`), using `@forge/resolver` and `@forge/api` (Jira REST calls via `asUser()`)
