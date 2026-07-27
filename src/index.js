@@ -89,13 +89,25 @@ resolver.define('getSprintsForProject', async ({ payload }) => {
     if (!board) return { sprints: [], error: 'No board found for this project.' };
 
     const boardId = board.id;
+
+    // The Agile API always returns sprints oldest-first with no server-side
+    // sort option. To get the 10 MOST RECENTLY closed sprints (not the 10
+    // oldest), first ask for the total closed count, then fetch just the
+    // final page.
+    const closedCountRes = await asUser().requestJira(
+      route`/rest/agile/1.0/board/${boardId}/sprint?state=closed&maxResults=1`,
+      { headers: { Accept: 'application/json' } }
+    );
+    const closedTotal = closedCountRes.ok ? (await closedCountRes.json()).total ?? 0 : 0;
+    const closedStartAt = Math.max(0, closedTotal - 10);
+
     const [activeRes, closedRes] = await Promise.all([
       asUser().requestJira(
         route`/rest/agile/1.0/board/${boardId}/sprint?state=active&maxResults=10`,
         { headers: { Accept: 'application/json' } }
       ),
       asUser().requestJira(
-        route`/rest/agile/1.0/board/${boardId}/sprint?state=closed&maxResults=20`,
+        route`/rest/agile/1.0/board/${boardId}/sprint?state=closed&startAt=${closedStartAt}&maxResults=10`,
         { headers: { Accept: 'application/json' } }
       ),
     ]);
@@ -103,9 +115,15 @@ resolver.define('getSprintsForProject', async ({ payload }) => {
     const activeBody = activeRes.ok ? await activeRes.json() : { values: [] };
     const closedBody = closedRes.ok ? await closedRes.json() : { values: [] };
 
+    const closedSprints = (closedBody.values || [])
+      .map(s => ({ id: s.id, name: s.name, state: 'closed', startDate: s.startDate, endDate: s.endDate }))
+      // Most recently closed first, by end date (not API/creation order — a
+      // sprint's dates can be edited independently of when it was created).
+      .sort((a, b) => Date.parse(b.endDate || b.startDate || 0) - Date.parse(a.endDate || a.startDate || 0));
+
     const sprints = [
       ...(activeBody.values || []).map(s => ({ id: s.id, name: s.name, state: 'active', startDate: s.startDate, endDate: s.endDate })),
-      ...(closedBody.values || []).map(s => ({ id: s.id, name: s.name, state: 'closed', startDate: s.startDate, endDate: s.endDate })),
+      ...closedSprints,
     ];
 
     return { sprints, boardId };
@@ -244,6 +262,7 @@ function extractRawSprintData(sprintId, issues, spFieldId) {
 
     issueData[issue.key] = {
       sp: typeof sp === 'number' ? sp : 0,
+      summary: issue.fields?.summary ?? '',
       created: issue.fields?.created ?? null,
       transitions,
       sprintEvents,
@@ -505,18 +524,24 @@ function computeScopeChangeData(sprint, issueData, statusMapping, graceWindowHou
   const labels = bizDays.map(dayLabel);
   const scopeDelta = bizDays.map(day => scopeDeltaByDay[day] || 0);
 
-  // Event-level rows for the table — every recorded add/remove/excluded event,
-  // even ones outside the sprint's date bounds (matches the reference tool,
-  // which surfaces the full audit trail with a caveat rather than filtering).
+  // Event-level rows for the table — only events that actually land a delta on
+  // the chart above (same snapToBizDay + startDate/endDate range check as
+  // addDelta in computeScopeFoundation). Events outside that range don't move
+  // any bar, so they're excluded here too rather than showing an entry the
+  // chart can't explain.
   const events = [];
   for (const [key, issue] of Object.entries(issueData)) {
     const sp = issue.sp || 0;
     for (const ev of issue.sprintEvents) {
-      events.push({ key, ts: ev.ts, sp: ev.type === 'added' ? sp : -sp });
+      const day = snapToBizDay(ev.ts);
+      if (day < startDate || day > endDate) continue;
+      events.push({ key, summary: issue.summary, ts: ev.ts, sp: ev.type === 'added' ? sp : -sp });
     }
     for (const t of issue.transitions) {
       if (statusMapping[t.to] === 'excluded') {
-        events.push({ key, ts: t.ts, sp: -sp });
+        const day = snapToBizDay(t.ts);
+        if (day < startDate || day > endDate) continue;
+        events.push({ key, summary: issue.summary, ts: t.ts, sp: -sp });
       }
     }
   }
@@ -583,8 +608,10 @@ function computeReworkData(sprint, issueData, statusMapping) {
       const fromPhase = statusMapping[t.from];
       const toPhase   = statusMapping[t.to];
       if (fromPhase === 'test' && toPhase !== 'done' && toPhase !== 'excluded') {
-        events.push({ key, ts: t.ts, sp });
-        addCount(snapToBizDay(t.ts));
+        const day = snapToBizDay(t.ts);
+        if (day < startDate || day > endDate) continue;
+        events.push({ key, summary: issue.summary, ts: t.ts, sp });
+        addCount(day);
       }
     }
   }
@@ -723,6 +750,7 @@ function computeCycleTimeData(sprint, issueData, statusMapping, opts) {
 
     rows.push({
       key,
+      summary: issue.summary,
       spEstimate: issue.sp || null,
       totalCycleTimeSp: totalCycleTimeSp || null,
       ...bucketData,

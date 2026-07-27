@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { invoke, view } from '@forge/bridge';
+import IssueLink from './IssueLink';
 
 const HDR_FILL   = '#1F4E79';
 const ZEBRA_FILL = 'var(--surface-sunken)';
@@ -28,6 +29,7 @@ function CycleTimeTable({ rows }) {
           <thead>
             <tr>
               <th style={{ background: HDR_FILL, color: '#fff', fontWeight: 700, textAlign: 'left', padding: '6px 10px', position: 'sticky', top: 0 }}>Issue ID</th>
+              <th style={{ background: HDR_FILL, color: '#fff', fontWeight: 700, textAlign: 'left', padding: '6px 10px', position: 'sticky', top: 0 }}>Title</th>
               {COLUMNS.map(c => (
                 <th key={c.key} style={{ background: HDR_FILL, color: '#fff', fontWeight: 700, textAlign: 'center', padding: '6px 10px', position: 'sticky', top: 0, whiteSpace: 'nowrap' }}>
                   {c.label}
@@ -37,7 +39,7 @@ function CycleTimeTable({ rows }) {
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={COLUMNS.length + 1} style={{ padding: 10, textAlign: 'center', color: 'var(--text-subtlest)', fontStyle: 'italic' }}>No data.</td></tr>
+              <tr><td colSpan={COLUMNS.length + 2} style={{ padding: 10, textAlign: 'center', color: 'var(--text-subtlest)', fontStyle: 'italic' }}>No data.</td></tr>
             )}
             {rows.map((row, i) => {
               const zebra = i % 2 === 1;
@@ -51,7 +53,10 @@ function CycleTimeTable({ rows }) {
               const rowFill = zebra ? ZEBRA_FILL : 'transparent';
               return (
                 <tr key={row.key}>
-                  <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', background: rowFill }}>{row.key}</td>
+                  <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', background: rowFill, whiteSpace: 'nowrap' }}>
+                    <IssueLink issueKey={row.key} />
+                  </td>
+                  <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', background: rowFill }}>{row.summary}</td>
                   <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center', background: rowFill }}>{spEst ?? ''}</td>
                   <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center', background: totalFill, fontWeight: 600 }}>{actSp ?? ''}</td>
                   <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center', background: rowFill, whiteSpace: 'nowrap' }}>{fmtBucket(row.inProgress)}</td>

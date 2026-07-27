@@ -5,6 +5,7 @@ import {
   Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { useDisplayMode, bothLayoutStyle } from './useDisplayMode';
+import IssueLink from './IssueLink';
 
 const RED = '#E36B5A';
 const RED_HDR = '#C00000';
@@ -49,9 +50,9 @@ function EventsTable({ events }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr>
-              {['Issue ID', 'Date', 'SP'].map(h => (
+              {['Issue ID', 'Title', 'Date', 'SP'].map(h => (
                 <th key={h} style={{
-                  background: RED_HDR, color: '#FFFFFF', fontWeight: 700, textAlign: h === 'Issue ID' ? 'left' : 'center',
+                  background: RED_HDR, color: '#FFFFFF', fontWeight: 700, textAlign: (h === 'Issue ID' || h === 'Title') ? 'left' : 'center',
                   padding: '6px 10px', position: 'sticky', top: 0,
                 }}>{h}</th>
               ))}
@@ -59,11 +60,14 @@ function EventsTable({ events }) {
           </thead>
           <tbody>
             {events.length === 0 && (
-              <tr><td colSpan={3} style={{ padding: 10, textAlign: 'center', color: 'var(--text-subtlest)', fontStyle: 'italic' }}>No rework events.</td></tr>
+              <tr><td colSpan={4} style={{ padding: 10, textAlign: 'center', color: 'var(--text-subtlest)', fontStyle: 'italic' }}>No rework events.</td></tr>
             )}
             {events.map((ev, i) => (
               <tr key={i} style={{ background: i % 2 === 1 ? RED_ZEBRA : 'transparent' }}>
-                <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)' }}>{ev.key}</td>
+                <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                  <IssueLink issueKey={ev.key} />
+                </td>
+                <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)' }}>{ev.summary}</td>
                 <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center' }}>{fmtEventDate(ev.ts)}</td>
                 <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center', fontWeight: 600 }}>
                   {ev.sp}

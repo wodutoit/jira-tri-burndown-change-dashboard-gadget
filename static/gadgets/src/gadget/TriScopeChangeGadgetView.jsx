@@ -5,6 +5,7 @@ import {
   Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
 import { useDisplayMode, bothLayoutStyle } from './useDisplayMode';
+import IssueLink from './IssueLink';
 
 const AMBER = '#EAAB30';
 const AMBER_HDR = '#FFC000';
@@ -50,16 +51,13 @@ function ScopeChart({ data }) {
 function EventsTable({ events }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
-      <div style={{ fontSize: 11, color: 'var(--text-subtlest)', fontStyle: 'italic', marginBottom: 8, lineHeight: 1.4 }}>
-        Events may have occurred outside the bounds of the current sprint and won't be reflected in the chart above — check the date column.
-      </div>
       <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 4 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr>
-              {['Issue ID', 'Date', 'SP'].map(h => (
+              {['Issue ID', 'Title', 'Date', 'SP'].map(h => (
                 <th key={h} style={{
-                  background: AMBER_HDR, color: '#1F2422', fontWeight: 700, textAlign: h === 'Issue ID' ? 'left' : 'center',
+                  background: AMBER_HDR, color: '#1F2422', fontWeight: 700, textAlign: (h === 'Issue ID' || h === 'Title') ? 'left' : 'center',
                   padding: '6px 10px', position: 'sticky', top: 0,
                 }}>{h}</th>
               ))}
@@ -67,11 +65,14 @@ function EventsTable({ events }) {
           </thead>
           <tbody>
             {events.length === 0 && (
-              <tr><td colSpan={3} style={{ padding: 10, textAlign: 'center', color: 'var(--text-subtlest)', fontStyle: 'italic' }}>No scope change events.</td></tr>
+              <tr><td colSpan={4} style={{ padding: 10, textAlign: 'center', color: 'var(--text-subtlest)', fontStyle: 'italic' }}>No scope change events.</td></tr>
             )}
             {events.map((ev, i) => (
               <tr key={i} style={{ background: i % 2 === 1 ? 'var(--surface-sunken)' : 'transparent' }}>
-                <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)' }}>{ev.key}</td>
+                <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', whiteSpace: 'nowrap' }}>
+                  <IssueLink issueKey={ev.key} />
+                </td>
+                <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)' }}>{ev.summary}</td>
                 <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center' }}>{fmtEventDate(ev.ts)}</td>
                 <td style={{ padding: '5px 10px', borderTop: '1px solid var(--border)', textAlign: 'center', color: ev.sp >= 0 ? AMBER : 'var(--text)', fontWeight: 600 }}>
                   {ev.sp >= 0 ? '+' : ''}{ev.sp}

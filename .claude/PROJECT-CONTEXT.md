@@ -44,4 +44,4 @@ There is no hardcoded status-name list anywhere. Every gadget works off a per-in
 
 ## Release state
 
-v1.0.0. Deployed to Forge `development`, `staging`, and `production` environments, all installed on `prediktivity.atlassian.net`. Being prepared for Atlassian Marketplace submission (broader distribution beyond internal use) — see `.claude/MARKETPLACE-APPROVAL-GUIDELINES.md`.
+v1.1.0. Deployed to Forge `development`, `staging`, and `production` environments, all installed on `prediktivity.atlassian.net`. Being prepared for Atlassian Marketplace submission (broader distribution beyond internal use) — see `.claude/MARKETPLACE-APPROVAL-GUIDELINES.md`.
