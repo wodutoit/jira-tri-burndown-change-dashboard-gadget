@@ -17,6 +17,7 @@ export function useSprintSourceConfig() {
   const [spFieldId, setSpFieldId]         = useState('');
   const [statusMapping, setStatusMapping] = useState({});
   const [graceWindowHours, setGraceWindowHours] = useState(12);
+  const [useDashboardFilter, setUseDashboardFilter] = useState(false);
 
   const [loading, setLoading]                 = useState(true);
   const [sprintsLoading, setSprintsLoading]   = useState(false);
@@ -53,6 +54,7 @@ export function useSprintSourceConfig() {
       setInitialConfig(cfg);
       if (cfg.spFieldId) setSpFieldId(cfg.spFieldId);
       if (cfg.graceWindowHours) setGraceWindowHours(cfg.graceWindowHours);
+      setUseDashboardFilter(!!cfg.useDashboardFilter);
 
       if (cfg.projectKey) {
         setProjectKey(cfg.projectKey);
@@ -99,14 +101,15 @@ export function useSprintSourceConfig() {
       spFieldId,
       statusMapping,
       graceWindowHours: Number(graceWindowHours) || 12,
+      useDashboardFilter,
     };
   }
 
   return {
     projects, fields, sprints, statuses,
-    projectKey, sprintId, spFieldId, statusMapping, graceWindowHours,
+    projectKey, sprintId, spFieldId, statusMapping, graceWindowHours, useDashboardFilter,
     loading, sprintsLoading, statusesLoading, error, initialConfig,
-    setSprintId, setSpFieldId, setStatusMapping, setGraceWindowHours,
+    setSprintId, setSpFieldId, setStatusMapping, setGraceWindowHours, setUseDashboardFilter,
     onProjectChange, canSave, getSourcePayload,
   };
 }

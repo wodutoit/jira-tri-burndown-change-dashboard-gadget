@@ -1,6 +1,6 @@
 const Resolver = require('@forge/resolver').default;
 const { route, asUser } = require('@forge/api');
-const { storage } = require('@forge/storage');
+const { kvs } = require('@forge/kvs');
 
 const resolver = new Resolver();
 
@@ -132,6 +132,47 @@ resolver.define('getSprintsForProject', async ({ payload }) => {
   }
 });
 
+// ── TRI-Sprint-Filter: shared dashboard-level Space+Sprint selection ─────────
+// Lets one "TRI Sprint Filter" gadget drive the Space/Sprint used by every
+// other TRI-* gadget on the same dashboard that opts in via its
+// "Use dashboard sprint filter" edit-mode toggle. Scoped per dashboard
+// (context.extension.dashboard.id) so separate dashboards never share a
+// selection. Live updates while the dashboard stays open are pushed via the
+// Custom UI events bridge (see useDashboardFilter.js) — this storage value is
+// only the durable fallback so gadgets that mount before/after the filter
+// gadget, or after a page refresh, still pick up the current selection.
+
+resolver.define('getDashboardSprintFilter', async ({ context }) => {
+  const dashboardId = context?.extension?.dashboard?.id;
+  if (!dashboardId) return { filter: null };
+  try {
+    const filter = await kvs.get(`dashboard-filter:${dashboardId}`);
+    return { filter: filter ?? null };
+  } catch (e) {
+    return { filter: null, error: e.message };
+  }
+});
+
+resolver.define('setDashboardSprintFilter', async ({ payload, context }) => {
+  const dashboardId = context?.extension?.dashboard?.id;
+  if (!dashboardId) return { error: 'No dashboard context.' };
+  const { projectKey, sprintMode, sprintId, sprintName } = payload ?? {};
+  if (!projectKey || !sprintMode) return { error: 'Missing projectKey/sprintMode.' };
+  const filter = {
+    projectKey,
+    sprintMode,
+    sprintId: sprintId ?? null,
+    sprintName: sprintName ?? '',
+    updatedAt: Date.now(),
+  };
+  try {
+    await kvs.set(`dashboard-filter:${dashboardId}`, filter);
+    return { ok: true, filter };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
 // ── Shared: resolve which sprint a widget instance is rendering ───────────────
 // 'active' mode does a fresh lookup every call so widgets never go stale when a
 // sprint closes; 'fixed' mode pins to a specific (often closed) sprint id.
@@ -173,7 +214,7 @@ async function resolveSprint({ projectKey, sprintMode, sprintId }) {
 async function getSpaceName(projectKey) {
   const cacheKey = `space-name:${projectKey}`;
   try {
-    const cached = await storage.get(cacheKey);
+    const cached = await kvs.get(cacheKey);
     if (cached) return cached;
   } catch (_) {}
 
@@ -183,9 +224,15 @@ async function getSpaceName(projectKey) {
   );
   const name = res.ok ? (await res.json()).name : projectKey;
 
-  try { await storage.set(cacheKey, name); } catch (_) {}
+  try { await kvs.set(cacheKey, name); } catch (_) {}
   return name;
 }
+
+resolver.define('getSpaceName', async ({ payload }) => {
+  const { projectKey } = payload ?? {};
+  if (!projectKey) return { spaceName: '' };
+  return { spaceName: await getSpaceName(projectKey) };
+});
 
 // ── Shared: fetch + cache raw per-sprint issue/changelog data ─────────────────
 // This is the expensive part (pagination + full changelog per issue) and is
@@ -276,7 +323,7 @@ async function getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh })
 
   if (!forceRefresh) {
     try {
-      const cached = await storage.get(cacheKey);
+      const cached = await kvs.get(cacheKey);
       if (cached) {
         const stale = sprint.state === 'active' && (Date.now() - cached.cachedAt) > ACTIVE_CACHE_TTL_MS;
         if (!stale) return { issueData: cached.issueData, fromCache: true };
@@ -288,7 +335,7 @@ async function getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh })
   const issueData = extractRawSprintData(sprint.id, issues, spFieldId);
 
   try {
-    await storage.set(cacheKey, { issueData, cachedAt: Date.now() });
+    await kvs.set(cacheKey, { issueData, cachedAt: Date.now() });
   } catch (_) {}
 
   return { issueData, fromCache: false };

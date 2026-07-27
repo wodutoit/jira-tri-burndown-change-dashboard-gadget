@@ -5,6 +5,7 @@ import {
   Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { localTodayISO } from './gadgetUtils';
+import { useEffectiveSprintSource } from './useEffectiveSprintSource';
 
 const COLORS = {
   ideal:     '#6B7280',
@@ -63,16 +64,17 @@ export default function TriBurndownGadgetView() {
   const [config, setConfig]     = useState(null);
   const [fromCache, setFromCache] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const source = useEffectiveSprintSource(config);
 
-  async function fetchData(cfg, forceRefresh = false) {
+  async function fetchData(src, forceRefresh = false) {
     if (forceRefresh) setRefreshing(true);
     const result = await invoke('getBurndownData', {
-      projectKey:       cfg.projectKey,
-      sprintMode:       cfg.sprintMode ?? 'active',
-      sprintId:         cfg.sprintId ?? null,
-      spFieldId:        cfg.spFieldId,
-      statusMapping:    cfg.statusMapping,
-      graceWindowHours: cfg.graceWindowHours,
+      projectKey:       src.projectKey,
+      sprintMode:       src.sprintMode,
+      sprintId:         src.sprintId,
+      spFieldId:        config.spFieldId,
+      statusMapping:    src.statusMapping,
+      graceWindowHours: config.graceWindowHours,
       todayISO:         localTodayISO(),
       forceRefresh,
     });
@@ -88,21 +90,29 @@ export default function TriBurndownGadgetView() {
   useEffect(() => {
     view.theme.enable().catch(() => {});
     view.getContext().catch(() => ({}))
-      .then(ctx => {
-        const cfg = ctx?.extension?.gadgetConfiguration ?? {};
-        setConfig(cfg);
-        if (!hasConfig(cfg)) return null;
-        return fetchData(cfg);
-      })
-      .catch(e => setError(String(e)))
-      .finally(() => setLoading(false));
+      .then(ctx => setConfig(ctx?.extension?.gadgetConfiguration ?? {}))
+      .catch(e => setError(String(e)));
   }, []);
 
-  const handleRefresh = async () => {
+  // Fetches (or re-fetches) once the gadget's own config is loaded and the
+  // effective Space/Sprint/Status-Mapping (own config, or the dashboard
+  // filter's override) has resolved. Also re-runs on live filter changes.
+  useEffect(() => {
     if (!config) return;
+    if (!hasConfig(config)) { setLoading(false); return; }
+    if (!source.ready) return;
+    setError(null);
+    fetchData(source)
+      .catch(e => setError(String(e)))
+      .finally(() => setLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, source.ready, source.projectKey, source.sprintMode, source.sprintId, JSON.stringify(source.statusMapping)]);
+
+  const handleRefresh = async () => {
+    if (!config || !source.ready) return;
     setError(null);
     try {
-      await fetchData(config, true);
+      await fetchData(source, true);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -110,7 +120,9 @@ export default function TriBurndownGadgetView() {
     }
   };
 
-  if (loading) return <div style={{ padding: 20, fontSize: 13, fontFamily: 'inherit' }}>Loading…</div>;
+  if (loading || (config && hasConfig(config) && !source.ready)) {
+    return <div style={{ padding: 20, fontSize: 13, fontFamily: 'inherit' }}>Loading…</div>;
+  }
 
   if (!hasConfig(config)) {
     return <div style={{ padding: 16, color: 'var(--text-subtlest)', fontSize: 13, fontFamily: 'inherit' }}>
@@ -142,7 +154,13 @@ export default function TriBurndownGadgetView() {
           <div style={{ fontSize: 11, color: 'var(--text-subtlest)' }}>
             {data.startDate} – {data.endDate}
             {fromCache && !refreshing && <span style={{ marginLeft: 8, opacity: 0.6 }}>· cached</span>}
+            {source.usingFilter && <span style={{ marginLeft: 8, opacity: 0.7 }}>· via TRI Sprint Filter</span>}
           </div>
+          {source.usingDefaultMapping && (
+            <div style={{ fontSize: 11, color: 'var(--text-subtlest)', fontStyle: 'italic', marginTop: 2 }}>
+              Using a best-guess status mapping for this space — edit this gadget while the filter points here to customize.
+            </div>
+          )}
         </div>
         <button
           onClick={handleRefresh}

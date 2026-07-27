@@ -2,7 +2,7 @@
 
 **Effective date:** 20 July 2026
 
-This policy describes what data the TRI Sprint Dashboard Gadgets app (TRI Burndown, TRI Scope Change, TRI Rework, TRI Cycle Time) accesses and stores when installed on your Jira Cloud site.
+This policy describes what data the TRI Sprint Dashboard Gadgets app (TRI Burndown, TRI Scope Change, TRI Rework, TRI Cycle Time, TRI Sprint Filter) accesses and stores when installed on your Jira Cloud site.
 
 ## What the app accesses
 
@@ -20,6 +20,8 @@ Issue titles are shown in the gadgets' event tables so entries are identifiable 
 The app caches a trimmed subset of the above (issue keys, issue titles, story-point values, status-change timestamps, sprint-membership event timestamps, and issue creation dates) in Forge Storage, which is hosted on Atlassian's infrastructure and scoped to your site's installation of this app. This cache exists purely to avoid re-fetching the same sprint data on every page load — it holds no data beyond what's described above, and no user-identifying information.
 
 Each gadget's configuration (which space/sprint it's pointed at, its status-to-phase mapping, and its display settings) is stored using Jira's own standard dashboard-gadget configuration mechanism, not a separate database.
+
+If you use the TRI Sprint Filter gadget, its current space/sprint selection is stored in Forge Storage too, scoped to the specific dashboard it's on — no new category of data beyond what's already listed above, just the same space/sprint selection shared across gadgets on one dashboard instead of saved separately in each one.
 
 ## What the app does not do
 

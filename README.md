@@ -1,6 +1,6 @@
 # TRI Sprint Dashboard Gadgets
 
-A standalone Atlassian Forge app providing four Jira dashboard gadgets for sprint reporting:
+A standalone Atlassian Forge app providing five Jira dashboard gadgets for sprint reporting:
 
 | Gadget | What it shows |
 | --- | --- |
@@ -8,8 +8,9 @@ A standalone Atlassian Forge app providing four Jira dashboard gadgets for sprin
 | **TRI Scope Change** | Daily net story-point scope change, as a chart, table ("Sprint Change Events"), or both |
 | **TRI Rework** | Daily test-failure kickback count, as a chart, table ("Sprint Rework Events"), or both |
 | **TRI Cycle Time** | Per-issue business hours spent in In Progress / Blocked / Code Review / Test, with estimate-vs-actual highlighting |
+| **TRI Sprint Filter** | A live Space/Sprint picker other gadgets on the same dashboard can follow, so you only pick the sprint once (see "Dashboard sprint filter" below) |
 
-All four are ports of a reference Python reporting script (issue-changelog analysis + Excel dashboard) into live, self-configuring Jira gadgets. This project has no dependency on any other repo or app — it's a complete, self-contained Forge app you can `forge register` and deploy on its own.
+The first four are ports of a reference Python reporting script (issue-changelog analysis + Excel dashboard) into live, self-configuring Jira gadgets. This project has no dependency on any other repo or app — it's a complete, self-contained Forge app you can `forge register` and deploy on its own.
 
 This README is for developers working on the code. If you just want to add and configure these gadgets on your own dashboard, see **[USAGE.md](USAGE.md)** instead.
 
@@ -17,7 +18,7 @@ This README is for developers working on the code. If you just want to add and c
 
 - **Backend**: Node.js Forge resolver (`src/index.js`), using `@forge/resolver` and `@forge/api` (Jira REST calls via `asUser()`)
 - **Frontend**: React + Vite Custom UI (`static/gadgets/`) — every gadget's view and edit mode share one built bundle; `main.jsx` decides which component to render based on the Forge context (see "How the multi-gadget pattern works" below). Charts are rendered with Recharts.
-- **Storage**: `@forge/storage` caches the expensive part — issues + full changelog for a sprint — keyed by `(sprintId, storyPointsFieldId)`. All four gadgets share this cache when pointed at the same sprint, so only one Jira fetch happens regardless of how many TRI-* widgets are on a dashboard. Active sprints re-fetch after 5 minutes; closed sprints are cached indefinitely (each gadget has a manual Refresh button to force a re-fetch).
+- **Storage**: `@forge/kvs` caches the expensive part — issues + full changelog for a sprint — keyed by `(sprintId, storyPointsFieldId)`. All four reporting gadgets share this cache when pointed at the same sprint, so only one Jira fetch happens regardless of how many TRI-* widgets are on a dashboard. Active sprints re-fetch after 5 minutes; closed sprints are cached indefinitely (each gadget has a manual Refresh button to force a re-fetch). Storage also holds the current TRI Sprint Filter selection per dashboard (see below). **Note:** this app previously depended on the `@forge/storage` package using a bare `const { storage } = require('@forge/storage')` pattern that doesn't actually exist in that package's v2 API (it has no ready-made `storage` export) — every `storage.get`/`storage.set` call was silently failing and swallowed by a `catch (_) {}`, so caching never worked at all until this was caught and fixed by switching to `@forge/kvs`'s `kvs` export, which Atlassian's current docs confirm is the correct/supported package.
 
 ## Prerequisites
 
@@ -38,11 +39,18 @@ static/gadgets/              React frontend (Vite)
     gadgetUtils.js               Shared status-color helper + localTodayISO() (see note below)
     sprintConfigShared.jsx       Shared constants (phase options, styles) + Section/DisplayModeSection
     useSprintSourceConfig.js     Shared hook: Space -> Sprint -> SP Field -> Status Mapping -> Grace
-                                 Window state/loading, used by every gadget's edit screen
+                                 Window -> "use dashboard filter" state/loading, used by every
+                                 reporting gadget's edit screen
     SprintSourceFields.jsx       Shared presentational form for the above
     useDisplayMode.js            Shared chart/table/both view-mode logic (Scope Change, Rework)
-    Tri*GadgetView.jsx           One view component per gadget
-    Tri*GadgetEdit.jsx           One edit component per gadget
+    useDashboardFilter.js        Reads the TRI Sprint Filter gadget's current selection for this
+                                 dashboard (storage + live Custom UI events)
+    useEffectiveSprintSource.js  Resolves each reporting gadget's actual Space/Sprint/Status-Mapping
+                                 — own config, or the dashboard filter's override
+    IssueLink.jsx                Shared "open this issue in Jira" link (uses router.open — plain
+                                 <a target="_blank"> is blocked inside the Custom UI iframe sandbox)
+    Tri*GadgetView.jsx           One view component per gadget (including TriSprintFilterGadgetView)
+    Tri*GadgetEdit.jsx           One edit component per gadget (including TriSprintFilterGadgetEdit)
   build/                      Built output (what manifest's `resources` points at) — gitignored
 ```
 
@@ -134,6 +142,14 @@ TRI Scope Change and TRI Rework add a **Display As** choice (Chart / Table / Bot
 
 TRI Cycle Time adds **Hours per Story Point** (default 4h = 1 SP) and a **Business Hours** window (start hour / end hour / UTC offset, default 9–17 UTC+10) used for its business-hours math — it has no chart, only the cycle-time table.
 
+## Dashboard sprint filter
+
+TRI Sprint Filter is a fifth, minimal gadget: its edit screen only asks for a Space, and its view mode is a live Sprint dropdown you interact with directly on the dashboard (not via edit/Save). Selecting a sprint there persists the choice via `@forge/kvs` (scoped per dashboard, via `context.extension.dashboard.id`) and broadcasts it live over the Custom UI `events` bridge (`useDashboardFilter.js`) so any of the other four gadgets already open on the same dashboard update immediately.
+
+Each of the four reporting gadgets has its own **"Use dashboard sprint filter"** checkbox (in Section 2, next to Sprint — off by default). When on, `useEffectiveSprintSource.js` overrides that gadget's own Space/Sprint with the filter's current value, falling back to its own configured Space/Sprint if no filter gadget exists yet on the dashboard. SP Field, Status Mapping, and Grace Window always stay per-gadget config — they're not part of the filter.
+
+Status Mapping is the one wrinkle: it's built against a specific project's actual status names, so it can't blindly follow a filter that might point at a different project. If the filter's Space matches what a gadget's mapping was configured against, the saved mapping is used unchanged. If the filter switches to a different Space, the gadget falls back to the same best-guess default mapping used the first time you pick a Space in edit mode, and shows a small "using a best-guess status mapping" note in its header. Re-edit the gadget while the filter points at that Space to fix the mapping properly.
+
 ### Known simplifications
 
 - The sprint picker uses the project's first board. If a project has multiple boards, only the first one returned by Jira is used.
@@ -141,6 +157,8 @@ TRI Cycle Time adds **Hours per Story Point** (default 4h = 1 SP) and a **Busine
 - The project picker fetches up to 100 projects in one page — add pagination if your site has more.
 - Business-hours math (TRI Cycle Time) uses a single fixed UTC offset, not a real IANA timezone — no daylight-saving transitions.
 - `getSprintRawData` (`src/index.js`) paginates through every issue in a sprint with its full changelog, with no cap on issue count or page count. Tested and confirmed working with a ~100-issue sprint. Larger sprints (or issues with very long changelog histories) will take proportionally longer to fetch on a cache miss, and could risk hitting the Forge function execution time limit — if you regularly run sprints much larger than ~100 issues, test against one before relying on this in production.
+- If more than one TRI Sprint Filter gadget is added to the same dashboard, they share the same dashboard-scoped storage entry — whichever one you last changed wins. There's no real use case for adding more than one, so this isn't guarded against.
+- The Custom UI `events` bridge used for live filter updates is in-page only, not persisted — it's why the filter's selection is also written to storage, so gadgets that mount before/after the filter gadget, or after a page reload, still pick it up on their initial load rather than only on the next live change.
 
 ## How the multi-gadget pattern works
 
@@ -171,6 +189,6 @@ Each gadget's own config, once saved via `view.submit({...})` in its edit compon
 
 ## Status
 
-Four gadgets are implemented and manually tested against live sprint data. There are no automated tests or CI configured — smoke-test each gadget against an active and a closed sprint (including edge cases like a backdated sprint start date and weekend transitions) before deploying a change.
+Five gadgets are implemented and manually tested against live sprint data. There are no automated tests or CI configured — smoke-test each gadget against an active and a closed sprint (including edge cases like a backdated sprint start date and weekend transitions), and the dashboard filter's live update + fallback behavior, before deploying a change.
 
 If distributing this app beyond your own org (e.g. Atlassian Marketplace), note that packaging/listing requirements (privacy policy, EULA, support contact, security self-assessment, scopes justification) are tracked separately from this technical README.

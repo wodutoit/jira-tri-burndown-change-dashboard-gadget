@@ -6,6 +6,7 @@ import {
 } from 'recharts';
 import { useDisplayMode, bothLayoutStyle } from './useDisplayMode';
 import IssueLink from './IssueLink';
+import { useEffectiveSprintSource } from './useEffectiveSprintSource';
 
 const RED = '#E36B5A';
 const RED_HDR = '#C00000';
@@ -89,15 +90,16 @@ export default function TriReworkGadgetView() {
   const [fromCache, setFromCache] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const { isBoth, isTwoCol, viewMode, toggleViewMode } = useDisplayMode(config?.displayMode);
+  const source = useEffectiveSprintSource(config);
 
-  async function fetchData(cfg, forceRefresh = false) {
+  async function fetchData(src, forceRefresh = false) {
     if (forceRefresh) setRefreshing(true);
     const result = await invoke('getReworkData', {
-      projectKey:    cfg.projectKey,
-      sprintMode:    cfg.sprintMode ?? 'active',
-      sprintId:      cfg.sprintId ?? null,
-      spFieldId:     cfg.spFieldId,
-      statusMapping: cfg.statusMapping,
+      projectKey:    src.projectKey,
+      sprintMode:    src.sprintMode,
+      sprintId:      src.sprintId,
+      spFieldId:     config.spFieldId,
+      statusMapping: src.statusMapping,
       forceRefresh,
     });
     if (result.error) throw new Error(result.error);
@@ -112,21 +114,26 @@ export default function TriReworkGadgetView() {
   useEffect(() => {
     view.theme.enable().catch(() => {});
     view.getContext().catch(() => ({}))
-      .then(ctx => {
-        const cfg = ctx?.extension?.gadgetConfiguration ?? {};
-        setConfig(cfg);
-        if (!hasConfig(cfg)) return null;
-        return fetchData(cfg);
-      })
-      .catch(e => setError(String(e)))
-      .finally(() => setLoading(false));
+      .then(ctx => setConfig(ctx?.extension?.gadgetConfiguration ?? {}))
+      .catch(e => setError(String(e)));
   }, []);
 
-  const handleRefresh = async () => {
+  useEffect(() => {
     if (!config) return;
+    if (!hasConfig(config)) { setLoading(false); return; }
+    if (!source.ready) return;
+    setError(null);
+    fetchData(source)
+      .catch(e => setError(String(e)))
+      .finally(() => setLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, source.ready, source.projectKey, source.sprintMode, source.sprintId, JSON.stringify(source.statusMapping)]);
+
+  const handleRefresh = async () => {
+    if (!config || !source.ready) return;
     setError(null);
     try {
-      await fetchData(config, true);
+      await fetchData(source, true);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -134,7 +141,9 @@ export default function TriReworkGadgetView() {
     }
   };
 
-  if (loading) return <div style={{ padding: 20, fontSize: 13, fontFamily: 'inherit' }}>Loading…</div>;
+  if (loading || (config && hasConfig(config) && !source.ready)) {
+    return <div style={{ padding: 20, fontSize: 13, fontFamily: 'inherit' }}>Loading…</div>;
+  }
 
   if (!hasConfig(config)) {
     return <div style={{ padding: 16, color: 'var(--text-subtlest)', fontSize: 13, fontFamily: 'inherit' }}>
@@ -159,7 +168,13 @@ export default function TriReworkGadgetView() {
           <div style={{ fontSize: 11, color: 'var(--text-subtlest)' }}>
             {data.startDate} – {data.endDate}
             {fromCache && !refreshing && <span style={{ marginLeft: 8, opacity: 0.6 }}>· cached</span>}
+            {source.usingFilter && <span style={{ marginLeft: 8, opacity: 0.7 }}>· via TRI Sprint Filter</span>}
           </div>
+          {source.usingDefaultMapping && (
+            <div style={{ fontSize: 11, color: 'var(--text-subtlest)', fontStyle: 'italic', marginTop: 2 }}>
+              Using a best-guess status mapping for this space — edit this gadget while the filter points here to customize.
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           {!isBoth && (

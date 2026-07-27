@@ -6,9 +6,9 @@ import { editStyles as S, Section, PHASE_OPTIONS } from './sprintConfigShared';
 // this component is purely presentational.
 export default function SprintSourceFields({
   projects, fields, sprints, statuses,
-  projectKey, sprintId, spFieldId, statusMapping, graceWindowHours,
+  projectKey, sprintId, spFieldId, statusMapping, graceWindowHours, useDashboardFilter,
   sprintsLoading, statusesLoading,
-  onProjectChange, setSprintId, setSpFieldId, setStatusMapping, setGraceWindowHours,
+  onProjectChange, setSprintId, setSpFieldId, setStatusMapping, setGraceWindowHours, setUseDashboardFilter,
 }) {
   return (
     <>
@@ -45,6 +45,21 @@ export default function SprintSourceFields({
           )
         }
         <div style={S.hint}>"Active Sprint (auto)" always tracks whatever sprint is currently active — no need to update this when a sprint closes. Pick a specific sprint instead to pin the widget to it (e.g. a closed sprint for a historical view).</div>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 8, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={useDashboardFilter}
+            onChange={e => setUseDashboardFilter(e.target.checked)}
+          />
+          Use dashboard sprint filter
+        </label>
+        <div style={S.hint}>
+          When enabled, a "TRI Sprint Filter" gadget on this dashboard (if present) overrides the Space
+          and Sprint above at view time — pick them here anyway, since they're still used to build the
+          Status Mapping options below. If the filter later points at a different space, this gadget
+          falls back to a best-guess status mapping for that space until you edit it again.
+        </div>
       </Section>
 
       <div style={S.divider} />

@@ -50,6 +50,18 @@ modules:
       edit:
         resource: main
 
+    - key: sprint-tri-filter-gadget
+      title: TRI Sprint Filter
+      description: Pick a space and sprint once — every other TRI-* gadget on
+        this dashboard with "Use dashboard sprint filter" enabled follows the
+        same selection automatically.
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v2/static/gadgets/public/icons/tri-sprint-filter.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
   function:
     - key: resolver
       handler: index.handler

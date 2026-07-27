@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { invoke, view } from '@forge/bridge';
 import IssueLink from './IssueLink';
+import { useEffectiveSprintSource } from './useEffectiveSprintSource';
 
 const HDR_FILL   = '#1F4E79';
 const ZEBRA_FILL = 'var(--surface-sunken)';
@@ -80,19 +81,20 @@ export default function TriCycleTimeGadgetView() {
   const [config, setConfig]       = useState(null);
   const [fromCache, setFromCache] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const source = useEffectiveSprintSource(config);
 
-  async function fetchData(cfg, forceRefresh = false) {
+  async function fetchData(src, forceRefresh = false) {
     if (forceRefresh) setRefreshing(true);
     const result = await invoke('getCycleTimeData', {
-      projectKey:     cfg.projectKey,
-      sprintMode:     cfg.sprintMode ?? 'active',
-      sprintId:       cfg.sprintId ?? null,
-      spFieldId:      cfg.spFieldId,
-      statusMapping:  cfg.statusMapping,
-      hoursPerSp:     cfg.hoursPerSp,
-      workStartHour:  cfg.workStartHour,
-      workEndHour:    cfg.workEndHour,
-      utcOffsetHours: cfg.utcOffsetHours,
+      projectKey:     src.projectKey,
+      sprintMode:     src.sprintMode,
+      sprintId:       src.sprintId,
+      spFieldId:      config.spFieldId,
+      statusMapping:  src.statusMapping,
+      hoursPerSp:     config.hoursPerSp,
+      workStartHour:  config.workStartHour,
+      workEndHour:    config.workEndHour,
+      utcOffsetHours: config.utcOffsetHours,
       forceRefresh,
     });
     if (result.error) throw new Error(result.error);
@@ -107,21 +109,26 @@ export default function TriCycleTimeGadgetView() {
   useEffect(() => {
     view.theme.enable().catch(() => {});
     view.getContext().catch(() => ({}))
-      .then(ctx => {
-        const cfg = ctx?.extension?.gadgetConfiguration ?? {};
-        setConfig(cfg);
-        if (!hasConfig(cfg)) return null;
-        return fetchData(cfg);
-      })
-      .catch(e => setError(String(e)))
-      .finally(() => setLoading(false));
+      .then(ctx => setConfig(ctx?.extension?.gadgetConfiguration ?? {}))
+      .catch(e => setError(String(e)));
   }, []);
 
-  const handleRefresh = async () => {
+  useEffect(() => {
     if (!config) return;
+    if (!hasConfig(config)) { setLoading(false); return; }
+    if (!source.ready) return;
+    setError(null);
+    fetchData(source)
+      .catch(e => setError(String(e)))
+      .finally(() => setLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, source.ready, source.projectKey, source.sprintMode, source.sprintId, JSON.stringify(source.statusMapping)]);
+
+  const handleRefresh = async () => {
+    if (!config || !source.ready) return;
     setError(null);
     try {
-      await fetchData(config, true);
+      await fetchData(source, true);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -129,7 +136,9 @@ export default function TriCycleTimeGadgetView() {
     }
   };
 
-  if (loading) return <div style={{ padding: 20, fontSize: 13, fontFamily: 'inherit' }}>Loading…</div>;
+  if (loading || (config && hasConfig(config) && !source.ready)) {
+    return <div style={{ padding: 20, fontSize: 13, fontFamily: 'inherit' }}>Loading…</div>;
+  }
 
   if (!hasConfig(config)) {
     return <div style={{ padding: 16, color: 'var(--text-subtlest)', fontSize: 13, fontFamily: 'inherit' }}>
@@ -154,7 +163,13 @@ export default function TriCycleTimeGadgetView() {
           <div style={{ fontSize: 11, color: 'var(--text-subtlest)' }}>
             {data.startDate} – {data.endDate}
             {fromCache && !refreshing && <span style={{ marginLeft: 8, opacity: 0.6 }}>· cached</span>}
+            {source.usingFilter && <span style={{ marginLeft: 8, opacity: 0.7 }}>· via TRI Sprint Filter</span>}
           </div>
+          {source.usingDefaultMapping && (
+            <div style={{ fontSize: 11, color: 'var(--text-subtlest)', fontStyle: 'italic', marginTop: 2 }}>
+              Using a best-guess status mapping for this space — edit this gadget while the filter points here to customize.
+            </div>
+          )}
         </div>
         <button
           onClick={handleRefresh}

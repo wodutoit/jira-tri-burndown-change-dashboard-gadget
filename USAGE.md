@@ -1,6 +1,6 @@
 # Using TRI Sprint Dashboard Gadgets
 
-Four Jira dashboard gadgets for sprint reporting:
+Five Jira dashboard gadgets for sprint reporting:
 
 | Gadget | What it shows |
 | --- | --- |
@@ -8,8 +8,9 @@ Four Jira dashboard gadgets for sprint reporting:
 | **TRI Scope Change** | How much story-point scope was added or removed each day of the sprint, as a chart, a table of individual events, or both |
 | **TRI Rework** | How often work gets kicked back out of testing, as a chart, a table of individual events, or both |
 | **TRI Cycle Time** | How many business hours each issue spent In Progress, Blocked, in Code Review, and in Test, compared against its story-point estimate |
+| **TRI Sprint Filter** | A space/sprint picker other TRI gadgets on the same dashboard can follow, so you only have to pick the sprint once |
 
-All four together on one dashboard:
+All four reporting gadgets together on one dashboard:
 
 ![All four TRI gadgets on one dashboard](docs/screenshots/TRI-Full-Dashboard.png)
 
@@ -17,7 +18,7 @@ All four together on one dashboard:
 
 1. Open the dashboard you want to add it to.
 2. Click **Add gadget** (usually in the top-right of the dashboard).
-3. Search for **TRI Burndown**, **TRI Scope Change**, **TRI Rework**, or **TRI Cycle Time** and add it.
+3. Search for **TRI Burndown**, **TRI Scope Change**, **TRI Rework**, **TRI Cycle Time**, or **TRI Sprint Filter** and add it.
 4. The gadget appears with a message asking you to configure it — click **Edit** on the gadget to open its settings.
 
 ## Configuring a gadget
@@ -29,6 +30,8 @@ Every gadget in this app walks through the same first few settings:
 3. **Story Points Field** — pick the field your team uses for story points.
 4. **Status → Phase Mapping** — for each status in your project's workflow, tell the gadget what it represents: To Do, In Progress, Blocked, Review, Test, Done, or Excluded (for things like "Won't Do" or "Not Required" that should drop out of the sprint's scope entirely). This is what lets the gadget work with your team's actual workflow instead of assuming fixed status names.
 5. **Commitment Grace Window** — how many hours after a sprint's recorded start date a ticket can still be added and count as originally "committed" scope, rather than as a mid-sprint scope change. The default of 12 hours works for most teams. If your sprint's recorded start date doesn't match when the sprint was actually started (for example, if it was started later than the date on record), widen this to cover the gap.
+
+Right below Sprint is a checkbox, **"Use dashboard sprint filter"** (off by default). Turn it on if you've added a **TRI Sprint Filter** gadget to this dashboard (see below) and want this gadget to follow whatever space/sprint it's currently set to, instead of the Space/Sprint you pick above. You still need to pick a Space and Sprint above either way — they're what the gadget uses to build the Status Mapping list.
 
 ![TRI Burndown's config screen showing the shared Space / Sprint / Story Points Field / Status Mapping / Commitment Grace Window steps](docs/screenshots/TRI-Burndown-Config.png)
 
@@ -66,6 +69,18 @@ It has no chart — just a table, one row per issue, showing each issue's story-
 
 ![TRI Cycle Time table with SP Estimate, Total Cycle Time SP, In Progress, Blocked, Code Review, and Test columns](docs/screenshots/TRI-Cycle-Time.png)
 
+## TRI Sprint Filter — pick the sprint once for the whole dashboard
+
+If you've got several TRI gadgets on one dashboard and keep changing the same sprint on each of them one by one, add a **TRI Sprint Filter** gadget instead. Its own settings only ask for a Space; the Sprint itself is picked directly on the dashboard, right in the gadget — no Edit screen round-trip needed.
+
+To use it:
+
+1. Add the **TRI Sprint Filter** gadget and set its Space in Edit mode.
+2. On each other TRI gadget you want to follow it, edit the gadget and turn on **"Use dashboard sprint filter"**.
+3. Change the sprint in the TRI Sprint Filter gadget — every gadget with the toggle on updates automatically, without needing a page refresh.
+
+If a gadget has the toggle on but the filter points at a different space than the one it was configured with, it falls back to a best-guess status mapping for that space and shows a small note saying so — edit the gadget while the filter points at that space to fine-tune the mapping.
+
 ## Keeping data fresh
 
 Each gadget caches its sprint data briefly to load faster — active sprints refresh automatically every 5 minutes, and closed sprints are cached until you ask for fresh data. Every gadget has a small **Refresh** button (with a ⟳ icon) to force an immediate update.
@@ -75,6 +90,7 @@ Each gadget caches its sprint data briefly to load faster — active sprints ref
 - If your project has more than one Scrum board, the gadget uses the first one Jira returns.
 - Business-hours calculations (TRI Cycle Time) use a single fixed time-zone offset rather than a full time zone, so they don't automatically adjust for daylight saving.
 - Very large sprints (roughly 100+ issues with long histories) may take longer to load the first time, since the gadget reads each issue's full status history.
+- TRI Sprint Filter's live updates only reach gadgets already open in your browser tab. If you change the filter and another gadget doesn't seem to follow, refresh the page — it'll pick up the current selection on load either way.
 
 ## Getting help
 

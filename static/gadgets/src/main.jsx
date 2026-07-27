@@ -10,12 +10,15 @@ import TriReworkGadgetView from './gadget/TriReworkGadgetView';
 import TriReworkGadgetEdit from './gadget/TriReworkGadgetEdit';
 import TriCycleTimeGadgetView from './gadget/TriCycleTimeGadgetView';
 import TriCycleTimeGadgetEdit from './gadget/TriCycleTimeGadgetEdit';
+import TriSprintFilterGadgetView from './gadget/TriSprintFilterGadgetView';
+import TriSprintFilterGadgetEdit from './gadget/TriSprintFilterGadgetEdit';
 
 const GADGETS = {
   'sprint-tri-burndown-gadget': { view: TriBurndownGadgetView, edit: TriBurndownGadgetEdit },
   'sprint-tri-scope-change-gadget': { view: TriScopeChangeGadgetView, edit: TriScopeChangeGadgetEdit },
   'sprint-tri-rework-gadget': { view: TriReworkGadgetView, edit: TriReworkGadgetEdit },
   'sprint-tri-cycle-time-gadget': { view: TriCycleTimeGadgetView, edit: TriCycleTimeGadgetEdit },
+  'sprint-tri-filter-gadget': { view: TriSprintFilterGadgetView, edit: TriSprintFilterGadgetEdit },
 };
 
 async function bootstrap() {
