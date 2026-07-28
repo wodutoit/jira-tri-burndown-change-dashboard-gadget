@@ -104,42 +104,47 @@ export default function TriSprintFilterGadgetView() {
 
   const activeSprints = sprints.filter(s => s.state === 'active');
   const closedSprints = sprints.filter(s => s.state === 'closed');
-  const selectStyle = { width: '100%', border: '1px solid var(--border)', borderRadius: 4, padding: '7px 10px', fontSize: 13, color: 'var(--text)', background: 'var(--surface)', fontFamily: 'inherit' };
+  const selectStyle = {
+    flex: 1, minWidth: 0, border: '1px solid var(--border)', borderRadius: 3, padding: '3px 6px',
+    fontSize: 12, color: 'var(--text)', background: 'var(--surface)', fontFamily: 'inherit',
+  };
+  const iconBtnStyle = {
+    fontSize: 12, lineHeight: 1, color: 'var(--text-subtlest)', background: 'none',
+    border: '1px solid var(--border)', borderRadius: 3, padding: '3px 6px', cursor: 'pointer', fontFamily: 'inherit',
+  };
 
   return (
-    <div style={{ padding: '12px 14px 14px', fontFamily: 'inherit', color: 'var(--text)', fontSize: 13 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-        <div style={{ fontSize: 14, fontWeight: 700 }}>{spaceName}</div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          title="Refresh sprint list"
-          style={{ fontSize: 11, color: 'var(--text-subtlest)', background: 'none', border: '1px solid var(--border)', borderRadius: 3, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}
+    <div style={{ padding: '6px 10px', fontFamily: 'inherit', color: 'var(--text)', fontSize: 13 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{spaceName}</span>
+
+        <select value={sprintChoice} onChange={e => handleChange(e.target.value)} disabled={saving} style={selectStyle}>
+          <option value="active">Active Sprint (auto)</option>
+          {activeSprints.length > 0 && (
+            <optgroup label="Pin to a specific sprint — Active">
+              {activeSprints.map(s => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+            </optgroup>
+          )}
+          {closedSprints.length > 0 && (
+            <optgroup label="Pin to a specific sprint — Closed">
+              {closedSprints.map(s => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+            </optgroup>
+          )}
+        </select>
+
+        <span
+          title='Every TRI-* gadget on this dashboard with "Use dashboard sprint filter" enabled in its own edit screen follows this selection.'
+          style={{ fontSize: 12, color: 'var(--text-subtlest)', cursor: 'help' }}
         >
-          {refreshing ? '⟳ Refreshing…' : '⟳ Refresh'}
+          ⓘ
+        </span>
+
+        <button onClick={handleRefresh} disabled={refreshing} title="Refresh sprint list" style={iconBtnStyle}>
+          {refreshing ? '…' : '⟳'}
         </button>
       </div>
 
-      {error && <div style={{ fontSize: 12, color: 'var(--over-text)', marginBottom: 8 }}>{error}</div>}
-
-      <select value={sprintChoice} onChange={e => handleChange(e.target.value)} disabled={saving} style={selectStyle}>
-        <option value="active">Active Sprint (auto)</option>
-        {activeSprints.length > 0 && (
-          <optgroup label="Pin to a specific sprint — Active">
-            {activeSprints.map(s => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
-          </optgroup>
-        )}
-        {closedSprints.length > 0 && (
-          <optgroup label="Pin to a specific sprint — Closed">
-            {closedSprints.map(s => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
-          </optgroup>
-        )}
-      </select>
-
-      <div style={{ fontSize: 11, color: 'var(--text-subtlest)', marginTop: 8, lineHeight: 1.4 }}>
-        Every TRI-* gadget on this dashboard with "Use dashboard sprint filter" enabled in its own edit
-        screen follows this selection.
-      </div>
+      {error && <div style={{ fontSize: 11, color: 'var(--over-text)', marginTop: 4 }}>{error}</div>}
     </div>
   );
 }
