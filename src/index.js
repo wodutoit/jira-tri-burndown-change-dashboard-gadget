@@ -358,6 +358,21 @@ function getBusinessDays(startDateStr, endDateStr) {
   return days;
 }
 
+// A closed sprint's `endDate` is the originally *scheduled* end date — Jira
+// never updates it if the sprint actually runs past that date. The real
+// close time lives in `completeDate`, only present once a sprint is closed,
+// recording the actual moment "Complete Sprint" was clicked. If a sprint ran
+// late, using `endDate` alone truncates every chart/table's date range
+// before the sprint's real last day of activity. Mirrors the existing
+// Commitment Grace Window escape hatch for backdated start dates, but for
+// the end of the sprint instead.
+function actualSprintEnd(sprint) {
+  if (sprint.completeDate && (!sprint.endDate || Date.parse(sprint.completeDate) > Date.parse(sprint.endDate))) {
+    return sprint.completeDate;
+  }
+  return sprint.endDate;
+}
+
 // Match the reference script's snap_to_biz_day: only roll Saturday/Sunday
 // forward to Monday. Weekday dates that fall BEFORE the sprint start are
 // returned as-is (outside bizDays), so they're never applied to running scope.
@@ -436,7 +451,7 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, grace
 
 function computeBurndown(sprint, issueData, statusMapping, graceWindowHours, clientTodayISO) {
   const startDate = sprint.startDate?.slice(0, 10);
-  const endDate   = sprint.endDate?.slice(0, 10);
+  const endDate   = actualSprintEnd(sprint)?.slice(0, 10);
   if (!startDate || !endDate) return null;
 
   // Resolver functions run server-side in UTC, so "today" per new Date() can
@@ -559,7 +574,7 @@ resolver.define('getBurndownData', async ({ payload }) => {
 
 function computeScopeChangeData(sprint, issueData, statusMapping, graceWindowHours) {
   const startDate = sprint.startDate?.slice(0, 10);
-  const endDate   = sprint.endDate?.slice(0, 10);
+  const endDate   = actualSprintEnd(sprint)?.slice(0, 10);
   if (!startDate || !endDate) return null;
 
   const bizDays = getBusinessDays(startDate, endDate);
@@ -637,7 +652,7 @@ resolver.define('getScopeChangeData', async ({ payload }) => {
 
 function computeReworkData(sprint, issueData, statusMapping) {
   const startDate = sprint.startDate?.slice(0, 10);
-  const endDate   = sprint.endDate?.slice(0, 10);
+  const endDate   = actualSprintEnd(sprint)?.slice(0, 10);
   if (!startDate || !endDate) return null;
 
   const bizDays = getBusinessDays(startDate, endDate);
@@ -750,7 +765,7 @@ const CYCLE_TIME_BUCKETS = { dev: 'inProgress', blocked: 'blocked', review: 'cod
 
 function computeCycleTimeData(sprint, issueData, statusMapping, opts) {
   const { hoursPerSp, workStartHour, workEndHour, utcOffsetHours } = opts;
-  const sprintEndMs = Date.parse(sprint.endDate);
+  const sprintEndMs = Date.parse(actualSprintEnd(sprint));
   const nowMs = Date.now();
   const effectiveNowMs = (sprintEndMs && sprintEndMs < nowMs) ? sprintEndMs : nowMs;
 
@@ -809,7 +824,7 @@ function computeCycleTimeData(sprint, issueData, statusMapping, opts) {
     sprintName:  sprint.name,
     sprintState: sprint.state,
     startDate: sprint.startDate?.slice(0, 10),
-    endDate:   sprint.endDate?.slice(0, 10),
+    endDate:   actualSprintEnd(sprint)?.slice(0, 10),
   };
 }
 
