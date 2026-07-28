@@ -860,4 +860,114 @@ resolver.define('getCycleTimeData', async ({ payload }) => {
   return { data, fromCache };
 });
 
+// ── TRI-Velocity: committed vs completed SP per closed sprint, per space ─────
+// Reuses the exact same "committed scope" (grace-window) and "done" phase
+// logic as TRI Burndown so a space's velocity numbers here are internally
+// consistent with what that space's Burndown widget would show for the same
+// sprint/mapping — rather than trying to replicate Jira's own Velocity
+// Report, which is powered by an undocumented board-report endpoint outside
+// the public Agile REST API this app otherwise sticks to (see PROJECT-CONTEXT.md).
+
+async function fetchClosedSprintsForBoard(projectKey, limit) {
+  const boardRes = await asUser().requestJira(
+    route`/rest/agile/1.0/board?projectKeyOrId=${projectKey}&maxResults=1`,
+    { headers: { Accept: 'application/json' } }
+  );
+  if (!boardRes.ok) return { error: `Board search failed: ${boardRes.status}` };
+  const boardBody = await boardRes.json();
+  const board = boardBody.values?.[0];
+  if (!board) return { error: 'No board found for this space.' };
+
+  const countRes = await asUser().requestJira(
+    route`/rest/agile/1.0/board/${board.id}/sprint?state=closed&maxResults=1`,
+    { headers: { Accept: 'application/json' } }
+  );
+  const total = countRes.ok ? (await countRes.json()).total ?? 0 : 0;
+  const startAt = Math.max(0, total - limit);
+
+  const res = await asUser().requestJira(
+    route`/rest/agile/1.0/board/${board.id}/sprint?state=closed&startAt=${startAt}&maxResults=${limit}`,
+    { headers: { Accept: 'application/json' } }
+  );
+  const body = res.ok ? await res.json() : { values: [] };
+
+  // Oldest → newest, so the chart reads left-to-right chronologically.
+  const sprints = (body.values || [])
+    .sort((a, b) => Date.parse(a.endDate || a.startDate || 0) - Date.parse(b.endDate || b.startDate || 0));
+
+  return { sprints };
+}
+
+// Committed = the same grace-window "initial scope" TRI Burndown uses as its
+// day-1 height. Completed = SP still in the sprint (not removed/excluded) in
+// a "done"-mapped status by the sprint's actual close.
+function computeVelocity(sprint, issueData, statusMapping, graceWindowHours = 12) {
+  const startDate = sprint.startDate?.slice(0, 10);
+  const endDate   = actualSprintEnd(sprint)?.slice(0, 10);
+  if (!startDate || !endDate) return null;
+
+  const bizDays = getBusinessDays(startDate, endDate);
+  if (!bizDays.length) return null;
+
+  const { initialScope, removedTsByKey, nrTsByKey } =
+    computeScopeFoundation(sprint, issueData, statusMapping, bizDays, graceWindowHours);
+
+  const eodMs = Date.parse(bizDays[bizDays.length - 1] + 'T23:59:59.999Z');
+  let completed = 0;
+  for (const [key, issue] of Object.entries(issueData)) {
+    const sp = issue.sp || 0;
+    if (!sp) continue;
+    if (nrTsByKey[key]      && Date.parse(nrTsByKey[key])      <= eodMs) continue;
+    if (removedTsByKey[key] && Date.parse(removedTsByKey[key]) <= eodMs) continue;
+    const doneTrans = issue.transitions.find(t => statusMapping[t.to] === 'done');
+    if (doneTrans && Date.parse(doneTrans.ts) <= eodMs) completed += sp;
+  }
+
+  return {
+    committed: Math.round(initialScope * 10) / 10,
+    completed: Math.round(completed * 10) / 10,
+    endDate,
+  };
+}
+
+// Matches the closed-sprint cap used elsewhere (getSprintsForProject) — the
+// viewer's 1-10 sprint-count selector slices this client-side rather than
+// triggering a refetch per change.
+const VELOCITY_SPRINT_CAP = 10;
+
+resolver.define('getVelocityData', async ({ payload }) => {
+  const { spaces } = payload ?? {};
+  if (!Array.isArray(spaces) || spaces.length === 0) return { spaces: [], error: 'No spaces configured.' };
+
+  const results = [];
+  for (const space of spaces) {
+    const { projectKey, spFieldId, statusMapping } = space ?? {};
+    if (!projectKey || !spFieldId || !statusMapping) {
+      results.push({ projectKey, name: projectKey, sprints: [], error: 'Incomplete configuration.' });
+      continue;
+    }
+    try {
+      const name = await getSpaceName(projectKey);
+      const { sprints, error } = await fetchClosedSprintsForBoard(projectKey, VELOCITY_SPRINT_CAP);
+      if (error) { results.push({ projectKey, name, sprints: [], error }); continue; }
+
+      const sprintRows = [];
+      for (const sprint of sprints) {
+        let issueData;
+        try {
+          ({ issueData } = await getSprintRawData({ projectKey, sprint, spFieldId }));
+        } catch (e) {
+          continue; // skip a sprint whose issue fetch failed rather than failing the whole space
+        }
+        const v = computeVelocity(sprint, issueData, statusMapping);
+        if (v) sprintRows.push({ id: sprint.id, name: sprint.name, endDate: v.endDate, committed: v.committed, velocity: v.completed });
+      }
+      results.push({ projectKey, name, sprints: sprintRows });
+    } catch (e) {
+      results.push({ projectKey, name: projectKey, sprints: [], error: e.message });
+    }
+  }
+  return { spaces: results };
+});
+
 exports.handler = resolver.getDefinitions();

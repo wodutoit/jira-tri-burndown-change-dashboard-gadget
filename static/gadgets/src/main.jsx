@@ -12,6 +12,8 @@ import TriCycleTimeGadgetView from './gadget/TriCycleTimeGadgetView';
 import TriCycleTimeGadgetEdit from './gadget/TriCycleTimeGadgetEdit';
 import TriSprintFilterGadgetView from './gadget/TriSprintFilterGadgetView';
 import TriSprintFilterGadgetEdit from './gadget/TriSprintFilterGadgetEdit';
+import TriVelocityGadgetView from './gadget/TriVelocityGadgetView';
+import TriVelocityGadgetEdit from './gadget/TriVelocityGadgetEdit';
 
 const GADGETS = {
   'sprint-tri-burndown-gadget': { view: TriBurndownGadgetView, edit: TriBurndownGadgetEdit },
@@ -19,6 +21,7 @@ const GADGETS = {
   'sprint-tri-rework-gadget': { view: TriReworkGadgetView, edit: TriReworkGadgetEdit },
   'sprint-tri-cycle-time-gadget': { view: TriCycleTimeGadgetView, edit: TriCycleTimeGadgetEdit },
   'sprint-tri-filter-gadget': { view: TriSprintFilterGadgetView, edit: TriSprintFilterGadgetEdit },
+  'sprint-tri-velocity-gadget': { view: TriVelocityGadgetView, edit: TriVelocityGadgetEdit },
 };
 
 async function bootstrap() {

@@ -1,6 +1,6 @@
 # Using TRI Sprint Dashboard Gadgets
 
-Five Jira dashboard gadgets for sprint reporting:
+Six Jira dashboard gadgets for sprint reporting:
 
 | Gadget | What it shows |
 | --- | --- |
@@ -9,6 +9,7 @@ Five Jira dashboard gadgets for sprint reporting:
 | **TRI Rework** | How often work gets kicked back out of testing, as a chart, a table of individual events, or both |
 | **TRI Cycle Time** | How many business hours each issue spent In Progress, Blocked, in Code Review, and in Test, compared against its story-point estimate |
 | **TRI Sprint Filter** | A space/sprint picker other TRI gadgets on the same dashboard can follow, so you only have to pick the sprint once |
+| **TRI Velocity** | Committed vs completed story points per closed sprint — one chart per space, with an optional combined Total across spaces |
 
 All four reporting gadgets together on one dashboard:
 
@@ -18,12 +19,12 @@ All four reporting gadgets together on one dashboard:
 
 1. Open the dashboard you want to add it to.
 2. Click **Add gadget** (usually in the top-right of the dashboard).
-3. Search for **TRI Burndown**, **TRI Scope Change**, **TRI Rework**, **TRI Cycle Time**, or **TRI Sprint Filter** and add it.
+3. Search for **TRI Burndown**, **TRI Scope Change**, **TRI Rework**, **TRI Cycle Time**, **TRI Sprint Filter**, or **TRI Velocity** and add it.
 4. The gadget appears with a message asking you to configure it — click **Edit** on the gadget to open its settings.
 
 ## Configuring a gadget
 
-Every gadget in this app walks through the same first few settings:
+TRI Burndown, TRI Scope Change, TRI Rework, and TRI Cycle Time walk through the same first few settings (TRI Sprint Filter and TRI Velocity are configured differently — see their own sections below):
 
 1. **Space** — pick the Jira project you want to report on. You'll see every project you have access to.
 2. **Sprint** — leave this on **"Active Sprint (auto)"** and the gadget will always show whichever sprint is currently active for that project, automatically moving to the next sprint once the current one closes — no need to touch this again. Or pick a specific sprint (including a closed one) if you want the gadget locked to that sprint for a historical view.
@@ -81,6 +82,19 @@ To use it:
 
 If a gadget has the toggle on but the filter points at a different space than the one it was configured with, it falls back to a best-guess status mapping for that space and shows a small note saying so — edit the gadget while the filter points at that space to fine-tune the mapping.
 
+## TRI Velocity
+
+Committed vs completed story points per closed sprint. Unlike the other gadgets, its Edit screen doesn't ask for a single Space/Sprint — it asks for one or more **spaces**, since it's meant to work either as a single team's velocity trend or a multi-team rollup:
+
+1. Pick a **Space**, its **Story Points Field**, and its **Status → Phase Mapping** (only the Done statuses actually matter here). Click **+ Add another space** to add more.
+2. Set **Closed sprints to show** (default, 1–10) — you can change this on the gadget itself later without editing the config.
+3. With **more than one space**, two extra checkboxes appear: show a **Total** chart summing every space's numbers, and/or **only** show that Total (hiding the individual space charts).
+4. With **exactly one space**, a **"Use dashboard sprint filter"** checkbox appears instead — turn it on to have this gadget follow whichever space a TRI Sprint Filter gadget on the same dashboard is set to. Only the *space* is followed; the sprint filter's sprint selection doesn't apply here, since TRI Velocity always shows a trend across several closed sprints rather than one sprint at a time.
+
+Each space's chart shows a pair of bars per sprint — grey for Committed, green for Completed — plus that space's average commitment and average velocity across the sprints shown:
+
+The Total chart (when enabled) lines sprints up by recency — "most recent", "2nd most recent", and so on — rather than by calendar date, since different spaces close their sprints on their own schedules.
+
 ## Keeping data fresh
 
 Each gadget caches its sprint data briefly to load faster — active sprints refresh automatically every 5 minutes, and closed sprints are cached until you ask for fresh data. Every gadget has a small **Refresh** button (with a ⟳ icon) to force an immediate update.
@@ -91,6 +105,7 @@ Each gadget caches its sprint data briefly to load faster — active sprints ref
 - Business-hours calculations (TRI Cycle Time) use a single fixed time-zone offset rather than a full time zone, so they don't automatically adjust for daylight saving.
 - Very large sprints (roughly 100+ issues with long histories) may take longer to load the first time, since the gadget reads each issue's full status history.
 - TRI Sprint Filter's live updates only reach gadgets already open in your browser tab. If you change the filter and another gadget doesn't seem to follow, refresh the page — it'll pick up the current selection on load either way.
+- TRI Velocity's first load of a multi-space config can take a little longer if none of those spaces' closed sprints have been loaded by any TRI gadget before — each closed sprint's data is cached the first time it's fetched, so later loads are fast.
 
 ## Getting help
 

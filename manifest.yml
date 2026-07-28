@@ -62,6 +62,18 @@ modules:
       edit:
         resource: main
 
+    - key: sprint-tri-velocity-gadget
+      title: TRI Velocity
+      description: Committed vs completed story points per closed sprint —
+        one chart per space, with an optional combined Total when more than
+        one space is configured.
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v2/static/gadgets/public/icons/tri-velocity.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
   function:
     - key: resolver
       handler: index.handler

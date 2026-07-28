@@ -1,6 +1,6 @@
 # TRI Sprint Dashboard Gadgets
 
-A standalone Atlassian Forge app providing five Jira dashboard gadgets for sprint reporting:
+A standalone Atlassian Forge app providing six Jira dashboard gadgets for sprint reporting:
 
 | Gadget | What it shows |
 | --- | --- |
@@ -9,6 +9,7 @@ A standalone Atlassian Forge app providing five Jira dashboard gadgets for sprin
 | **TRI Rework** | Daily test-failure kickback count, as a chart, table ("Sprint Rework Events"), or both |
 | **TRI Cycle Time** | Per-issue business hours spent in In Progress / Blocked / Code Review / Test, with estimate-vs-actual highlighting |
 | **TRI Sprint Filter** | A live Space/Sprint picker other gadgets on the same dashboard can follow, so you only pick the sprint once (see "Dashboard sprint filter" below) |
+| **TRI Velocity** | Committed vs completed story points per closed sprint, one chart per configured space, with an optional combined Total (see "Velocity gadget" below) |
 
 The first four are ports of a reference Python reporting script (issue-changelog analysis + Excel dashboard) into live, self-configuring Jira gadgets. This project has no dependency on any other repo or app — it's a complete, self-contained Forge app you can `forge register` and deploy on its own.
 
@@ -18,7 +19,7 @@ This README is for developers working on the code. If you just want to add and c
 
 - **Backend**: Node.js Forge resolver (`src/index.js`), using `@forge/resolver` and `@forge/api` (Jira REST calls via `asUser()`)
 - **Frontend**: React + Vite Custom UI (`static/gadgets/`) — every gadget's view and edit mode share one built bundle; `main.jsx` decides which component to render based on the Forge context (see "How the multi-gadget pattern works" below). Charts are rendered with Recharts.
-- **Storage**: `@forge/kvs` caches the expensive part — issues + full changelog for a sprint — keyed by `(sprintId, storyPointsFieldId)`. All four reporting gadgets share this cache when pointed at the same sprint, so only one Jira fetch happens regardless of how many TRI-* widgets are on a dashboard. Active sprints re-fetch after 5 minutes; closed sprints are cached indefinitely (each gadget has a manual Refresh button to force a re-fetch). Storage also holds the current TRI Sprint Filter selection per dashboard (see below). **Note:** this app previously depended on the `@forge/storage` package using a bare `const { storage } = require('@forge/storage')` pattern that doesn't actually exist in that package's v2 API (it has no ready-made `storage` export) — every `storage.get`/`storage.set` call was silently failing and swallowed by a `catch (_) {}`, so caching never worked at all until this was caught and fixed by switching to `@forge/kvs`'s `kvs` export, which Atlassian's current docs confirm is the correct/supported package.
+- **Storage**: `@forge/kvs` caches the expensive part — issues + full changelog for a sprint — keyed by `(sprintId, storyPointsFieldId)`. Every reporting gadget (including TRI Velocity, per closed sprint it charts) shares this cache when pointed at the same sprint, so only one Jira fetch happens regardless of how many TRI-* widgets are on a dashboard. Active sprints re-fetch after 5 minutes; closed sprints are cached indefinitely (each gadget has a manual Refresh button to force a re-fetch). Storage also holds the current TRI Sprint Filter selection per dashboard (see below). **Note:** this app previously depended on the `@forge/storage` package using a bare `const { storage } = require('@forge/storage')` pattern that doesn't actually exist in that package's v2 API (it has no ready-made `storage` export) — every `storage.get`/`storage.set` call was silently failing and swallowed by a `catch (_) {}`, so caching never worked at all until this was caught and fixed by switching to `@forge/kvs`'s `kvs` export, which Atlassian's current docs confirm is the correct/supported package.
 
 ## Prerequisites
 
@@ -49,6 +50,11 @@ static/gadgets/              React frontend (Vite)
                                  — own config, or the dashboard filter's override
     IssueLink.jsx                Shared "open this issue in Jira" link (uses router.open — plain
                                  <a target="_blank"> is blocked inside the Custom UI iframe sandbox)
+    VelocitySpaceRow.jsx         One space's Space/SP-Field/Status-Mapping row in TRI Velocity's
+                                 edit screen (no Sprint step — Velocity always trends across a
+                                 space's closed sprints, not one pinned sprint)
+    useVelocityEffectiveSpaces.js Single-space TRI Velocity configs only: resolves the dashboard
+                                 filter's Space override (Sprint is ignored — see below)
     Tri*GadgetView.jsx           One view component per gadget (including TriSprintFilterGadgetView)
     Tri*GadgetEdit.jsx           One edit component per gadget (including TriSprintFilterGadgetEdit)
   build/                      Built output (what manifest's `resources` points at) — gitignored
@@ -142,11 +148,24 @@ TRI Scope Change and TRI Rework add a **Display As** choice (Chart / Table / Bot
 
 TRI Cycle Time adds **Hours per Story Point** (default 4h = 1 SP) and a **Business Hours** window (start hour / end hour / UTC offset, default 9–17 UTC+10) used for its business-hours math — it has no chart, only the cycle-time table.
 
+## Velocity gadget
+
+TRI Velocity doesn't follow the shared Space → Sprint → SP Field → Status Mapping → Grace Window flow above — it has its own edit screen, because it charts a *trend* across many closed sprints per space rather than one pinned sprint:
+
+- **Spaces** — pick one or more Jira projects ("+ Add another space"). Each space gets its **own** Story Points field and Status Mapping, since different spaces can use different custom fields and workflows. Only **Done** matters in the mapping here — committed/completed math ignores Review/Test/Blocked distinctions the other gadgets care about.
+- **Closed sprints to show** (default, 1–10) — viewers can change this on the gadget itself; it just re-slices already-fetched data, no refetch.
+- One chart per configured space. With more than one space, two checkboxes appear: **"Show a Total chart summing all spaces"** and **"Only show the Total"** (hides the per-space charts).
+- With exactly one space configured, a **"Use dashboard sprint filter"** checkbox appears instead. When on, a TRI Sprint Filter gadget on the same dashboard overrides *which space* is charted — its Sprint selection is ignored, since Velocity always trends across closed sprints rather than showing a single sprint. If the filter points at a space this gadget wasn't configured for, it reuses the configured Story Points field and falls back to a best-guess Status Mapping (same tradeoff as the other gadgets — see "Dashboard sprint filter" below).
+
+**How committed/completed are computed:** rather than calling Jira's own Velocity Report (powered by an undocumented, board-report-only endpoint outside the public Agile REST API this app otherwise uses exclusively), TRI Velocity reuses TRI Burndown's exact grace-window/status-mapping math (`computeVelocity` in `src/index.js`, built on the same `computeScopeFoundation` helper): **Committed** = the grace-window "initial scope" (SP of issues in the sprint at/near its start); **Completed** = SP of issues still in the sprint (not removed/excluded) in a Done-mapped status by the sprint's actual close (`actualSprintEnd`, not the possibly-stale `endDate`). This keeps Velocity's numbers internally consistent with what that space's own Burndown gadget would show for the same sprint/mapping, but it can diverge from Jira's built-in Velocity Report in edge cases (issues moved between sprints, un-estimated issues, subtasks).
+
+**The Total chart aligns by recency rank, not calendar date** — "most recent", "2nd-most-recent", etc. across spaces — since spaces on separate boards almost never close sprints on the same day. A space with fewer closed sprints than others just contributes to fewer of the more-recent ranks.
+
 ## Dashboard sprint filter
 
-TRI Sprint Filter is a fifth, minimal gadget: its edit screen only asks for a Space, and its view mode is a live Sprint dropdown you interact with directly on the dashboard (not via edit/Save). Selecting a sprint there persists the choice via `@forge/kvs` (scoped per dashboard, via `context.extension.dashboard.id`) and broadcasts it live over the Custom UI `events` bridge (`useDashboardFilter.js`) so any of the other four gadgets already open on the same dashboard update immediately.
+TRI Sprint Filter is a minimal gadget: its edit screen only asks for a Space, and its view mode is a live Sprint dropdown you interact with directly on the dashboard (not via edit/Save). Selecting a sprint there persists the choice via `@forge/kvs` (scoped per dashboard, via `context.extension.dashboard.id`) and broadcasts it live over the Custom UI `events` bridge (`useDashboardFilter.js`) so any other TRI-* gadget already open on the same dashboard updates immediately.
 
-Each of the four reporting gadgets has its own **"Use dashboard sprint filter"** checkbox (in Section 2, next to Sprint — off by default). When on, `useEffectiveSprintSource.js` overrides that gadget's own Space/Sprint with the filter's current value, falling back to its own configured Space/Sprint if no filter gadget exists yet on the dashboard. SP Field, Status Mapping, and Grace Window always stay per-gadget config — they're not part of the filter.
+Each of the four Space+Sprint reporting gadgets (Burndown, Scope Change, Rework, Cycle Time) has its own **"Use dashboard sprint filter"** checkbox (in Section 2, next to Sprint — off by default). When on, `useEffectiveSprintSource.js` overrides that gadget's own Space/Sprint with the filter's current value, falling back to its own configured Space/Sprint if no filter gadget exists yet on the dashboard. SP Field, Status Mapping, and Grace Window always stay per-gadget config — they're not part of the filter. TRI Velocity has the same checkbox, but only when configured with exactly one space, and only the Space part of the filter applies — see "Velocity gadget" above.
 
 Status Mapping is the one wrinkle: it's built against a specific project's actual status names, so it can't blindly follow a filter that might point at a different project. If the filter's Space matches what a gadget's mapping was configured against, the saved mapping is used unchanged. If the filter switches to a different Space, the gadget falls back to the same best-guess default mapping used the first time you pick a Space in edit mode, and shows a small "using a best-guess status mapping" note in its header. Re-edit the gadget while the filter points at that Space to fix the mapping properly.
 
@@ -159,6 +178,8 @@ Status Mapping is the one wrinkle: it's built against a specific project's actua
 - `getSprintRawData` (`src/index.js`) paginates through every issue in a sprint with its full changelog, with no cap on issue count or page count. Tested and confirmed working with a ~100-issue sprint. Larger sprints (or issues with very long changelog histories) will take proportionally longer to fetch on a cache miss, and could risk hitting the Forge function execution time limit — if you regularly run sprints much larger than ~100 issues, test against one before relying on this in production.
 - If more than one TRI Sprint Filter gadget is added to the same dashboard, they share the same dashboard-scoped storage entry — whichever one you last changed wins. There's no real use case for adding more than one, so this isn't guarded against.
 - The Custom UI `events` bridge used for live filter updates is in-page only, not persisted — it's why the filter's selection is also written to storage, so gadgets that mount before/after the filter gadget, or after a page reload, still pick it up on their initial load rather than only on the next live change.
+- TRI Velocity fetches up to 10 closed sprints per configured space on first load (each a full issue+changelog fetch on a cache miss, same cost as one TRI Burndown load) — a multi-space config with several un-cached spaces can take noticeably longer on its very first load. Closed-sprint data is cached indefinitely afterward, so repeat loads are fast.
+- TRI Velocity's Total chart joins spaces by recency rank (most-recent, 2nd-most-recent, …), not calendar date — see "Velocity gadget" above.
 
 ## How the multi-gadget pattern works
 
@@ -189,6 +210,6 @@ Each gadget's own config, once saved via `view.submit({...})` in its edit compon
 
 ## Status
 
-Five gadgets are implemented and manually tested against live sprint data. There are no automated tests or CI configured — smoke-test each gadget against an active and a closed sprint (including edge cases like a backdated sprint start date and weekend transitions), and the dashboard filter's live update + fallback behavior, before deploying a change.
+Six gadgets are implemented and manually tested against live sprint data. There are no automated tests or CI configured — smoke-test each gadget against an active and a closed sprint (including edge cases like a backdated sprint start date and weekend transitions), TRI Velocity against a multi-space config with the Total chart on, and the dashboard filter's live update + fallback behavior, before deploying a change.
 
 If distributing this app beyond your own org (e.g. Atlassian Marketplace), note that packaging/listing requirements (privacy policy, EULA, support contact, security self-assessment, scopes justification) are tracked separately from this technical README.
