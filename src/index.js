@@ -1,11 +1,107 @@
 const Resolver = require('@forge/resolver').default;
 const { route, asUser } = require('@forge/api');
 const { kvs } = require('@forge/kvs');
+const crypto = require('crypto');
 
 const resolver = new Resolver();
 
 // Cache TTL for active sprints (ms). Closed sprints are cached forever.
 const ACTIVE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// Board-search's own `type` field ("scrum"/"kanban") is only meaningful for
+// classic (company-managed) boards. Team-managed ("next-gen") project boards
+// always report `type: "simple"` regardless of whether the project actually
+// uses sprints — confirmed against a real team-managed Kanban board that
+// Capacity was misreading as Scrum because of this. Probing sprint support
+// directly disambiguates it: Jira returns 400 ("The board does not support
+// sprints") for a board where sprints are switched off, and 200 otherwise —
+// this works for classic boards too, so it's a safe universal fallback, only
+// actually hit (one extra request) when `type` itself is inconclusive.
+async function resolveBoardType(board) {
+  if (board.type === 'scrum' || board.type === 'kanban') return board.type;
+  const res = await asUser().requestJira(
+    route`/rest/agile/1.0/board/${board.id}/sprint?maxResults=1`,
+    { headers: { Accept: 'application/json' } }
+  );
+  return res.ok ? 'scrum' : 'kanban';
+}
+
+// ── Shared: board lookup (first board for a project, same convention used
+// everywhere in this file) — also the only place that reads `board.type`
+// ("scrum"/"kanban"), needed by TRI-Space-Capacity to pick which UI a project gets.
+async function getBoardForProject(projectKey) {
+  const res = await asUser().requestJira(
+    route`/rest/agile/1.0/board?projectKeyOrId=${projectKey}&maxResults=1`,
+    { headers: { Accept: 'application/json' } }
+  );
+  if (!res.ok) return { error: `Board search failed: ${res.status}` };
+  const body = await res.json();
+  const board = body.values?.[0];
+  if (!board) return { error: 'No board found for this project.' };
+  return { board: { id: board.id, type: await resolveBoardType(board) } };
+}
+
+// ── Shared: Epic story-point rollup ──────────────────────────────────────────
+// Teams usually point child stories/tasks, not the Epic itself, so an Epic's own
+// SP field is often blank or stale. Wherever this app reads an issue's SP value,
+// an Epic with children uses the sum of its children's SP instead of its own
+// field value; an Epic with no children (or whose children query comes back
+// empty) falls back to its own value, unchanged from today's behavior.
+// `parent = <epicKey>` is Jira Cloud's current unified hierarchy field for
+// finding an Epic's children, working the same way in both team-managed and
+// company-managed projects since Atlassian's hierarchy migration — if a site
+// somehow doesn't support it, the query just comes back empty and the fallback
+// (the Epic's own value) applies, so this never throws or breaks the pipeline.
+//
+// Known simplification: if a child issue is ALSO independently present in the
+// same fetched issue batch as its Epic (e.g. both happen to land in the same
+// sprint, or both match a Kanban status/date scan), that child's SP is counted
+// once via its own row AND once via the Epic's rollup — the same class of
+// documented tradeoff as the Kanban committed/velocity JQL split above, not
+// silently ignored, but not solved with cross-issue dedup either, since Epics
+// are not normally sprint/board items in the first place.
+async function fetchEpicChildrenSp(epicKey, spFieldId) {
+  let total = 0;
+  let found = false;
+  let nextPageToken;
+  while (true) {
+    const reqBody = { jql: `parent = ${epicKey}`, fields: [spFieldId], maxResults: 100 };
+    if (nextPageToken) reqBody.nextPageToken = nextPageToken;
+    const res = await asUser().requestJira(
+      route`/rest/api/3/search/jql`,
+      { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(reqBody) }
+    );
+    if (!res.ok) break;
+    const body = await res.json();
+    const children = body.issues || [];
+    for (const c of children) {
+      found = true;
+      const sp = c.fields?.[spFieldId];
+      total += typeof sp === 'number' ? sp : 0;
+    }
+    nextPageToken = body.nextPageToken;
+    if (!children.length || !nextPageToken) break;
+  }
+  return found ? total : null;
+}
+
+function isEpicIssue(issue) {
+  return issue.fields?.issuetype?.name === 'Epic';
+}
+
+// Resolves the SP value to use for each issue in one batch — Epics get their
+// children queried in parallel, everything else passes through untouched.
+async function resolveIssueSpValues(issues, spFieldId) {
+  const epics = issues.filter(isEpicIssue);
+  const rollups = await Promise.all(epics.map(async e => [e.key, await fetchEpicChildrenSp(e.key, spFieldId)]));
+  const rollupByKey = new Map(rollups);
+  return new Map(issues.map(issue => {
+    const rollup = isEpicIssue(issue) ? rollupByKey.get(issue.key) : null;
+    const own = issue.fields?.[spFieldId];
+    const sp = rollup != null ? rollup : (typeof own === 'number' ? own : 0);
+    return [issue.key, sp];
+  }));
+}
 
 // ── Edit-mode: projects list ──────────────────────────────────────────────────
 
@@ -46,27 +142,41 @@ resolver.define('getNumericFields', async () => {
 
 // ── Edit-mode: statuses for a project ────────────────────────────────────────
 
+async function fetchProjectStatuses(projectKey) {
+  const res = await asUser().requestJira(
+    route`/rest/api/3/project/${projectKey}/statuses`,
+    { headers: { Accept: 'application/json' } }
+  );
+  if (!res.ok) return { statuses: [], error: `Jira ${res.status}` };
+  const data = await res.json();
+  const seen = new Set();
+  const statuses = [];
+  for (const issueType of data) {
+    for (const s of issueType.statuses || []) {
+      if (!seen.has(s.name)) {
+        seen.add(s.name);
+        statuses.push({ id: s.id, name: s.name, categoryKey: s.statusCategory?.key });
+      }
+    }
+  }
+  statuses.sort((a, b) => a.name.localeCompare(b.name));
+  return { statuses };
+}
+
+// Jira's own status category (new/indeterminate/done) — used by
+// TRI-Space-Capacity instead of the custom 7-value status→phase mapping the
+// other gadgets use, since Capacity only needs "not started / in progress /
+// done", not Review/Test/Blocked distinctions.
+function toCategoryMap(statuses) {
+  return Object.fromEntries(statuses.map(s => [s.name, s.categoryKey]));
+}
+
 resolver.define('getProjectStatuses', async ({ payload }) => {
   const { projectKey } = payload ?? {};
   if (!projectKey) return { statuses: [], error: 'No project key.' };
   try {
-    const res = await asUser().requestJira(
-      route`/rest/api/3/project/${projectKey}/statuses`,
-      { headers: { Accept: 'application/json' } }
-    );
-    if (!res.ok) return { statuses: [], error: `Jira ${res.status}` };
-    const data = await res.json();
-    const seen = new Set();
-    const statuses = [];
-    for (const issueType of data) {
-      for (const s of issueType.statuses || []) {
-        if (!seen.has(s.name)) {
-          seen.add(s.name);
-          statuses.push({ id: s.id, name: s.name, categoryKey: s.statusCategory?.key });
-        }
-      }
-    }
-    statuses.sort((a, b) => a.name.localeCompare(b.name));
+    const { statuses, error } = await fetchProjectStatuses(projectKey);
+    if (error) return { statuses: [], error };
     return { statuses };
   } catch (e) {
     return { statuses: [], error: e.message };
@@ -79,15 +189,8 @@ resolver.define('getSprintsForProject', async ({ payload }) => {
   const { projectKey } = payload ?? {};
   if (!projectKey) return { sprints: [], error: 'No project key.' };
   try {
-    const boardRes = await asUser().requestJira(
-      route`/rest/agile/1.0/board?projectKeyOrId=${projectKey}&maxResults=1`,
-      { headers: { Accept: 'application/json' } }
-    );
-    if (!boardRes.ok) return { sprints: [], error: `Board search failed: ${boardRes.status}` };
-    const boardBody = await boardRes.json();
-    const board = boardBody.values?.[0];
-    if (!board) return { sprints: [], error: 'No board found for this project.' };
-
+    const { board, error: boardError } = await getBoardForProject(projectKey);
+    if (boardError) return { sprints: [], error: boardError };
     const boardId = board.id;
 
     // The Agile API always returns sprints oldest-first with no server-side
@@ -178,14 +281,8 @@ resolver.define('setDashboardSprintFilter', async ({ payload, context }) => {
 // sprint closes; 'fixed' mode pins to a specific (often closed) sprint id.
 
 async function resolveActiveSprint(projectKey) {
-  const boardRes = await asUser().requestJira(
-    route`/rest/agile/1.0/board?projectKeyOrId=${projectKey}&maxResults=1`,
-    { headers: { Accept: 'application/json' } }
-  );
-  if (!boardRes.ok) return { error: `Board search failed: ${boardRes.status}` };
-  const boardBody = await boardRes.json();
-  const board = boardBody.values?.[0];
-  if (!board) return { error: 'No board found for this space.' };
+  const { board, error } = await getBoardForProject(projectKey);
+  if (error) return { error };
 
   const sprintRes = await asUser().requestJira(
     route`/rest/agile/1.0/board/${board.id}/sprint?state=active&maxResults=1`,
@@ -279,12 +376,13 @@ async function fetchSprintIssues(projectKey, sprintId, spFieldId) {
 // Trim raw Jira issues+changelog down to just what every widget's math needs:
 // SP value, creation date, status transitions, and ALL sprint add/remove events
 // (not just the first — a ticket can be added/removed multiple times).
-function extractRawSprintData(sprintId, issues, spFieldId) {
+async function extractRawSprintData(sprintId, issues, spFieldId) {
   const sprintIdStr = String(sprintId);
+  const spByKey = await resolveIssueSpValues(issues, spFieldId);
   const issueData = {};
 
   for (const issue of issues) {
-    const sp = issue.fields?.[spFieldId];
+    const sp = spByKey.get(issue.key);
     const transitions = [];
     const sprintEvents = [];
 
@@ -308,9 +406,10 @@ function extractRawSprintData(sprintId, issues, spFieldId) {
     sprintEvents.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
 
     issueData[issue.key] = {
-      sp: typeof sp === 'number' ? sp : 0,
+      sp,
       summary: issue.fields?.summary ?? '',
       created: issue.fields?.created ?? null,
+      currentStatus: issue.fields?.status?.name ?? null,
       transitions,
       sprintEvents,
     };
@@ -332,7 +431,7 @@ async function getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh })
   }
 
   const issues = await fetchSprintIssues(projectKey, sprint.id, spFieldId);
-  const issueData = extractRawSprintData(sprint.id, issues, spFieldId);
+  const issueData = await extractRawSprintData(sprint.id, issues, spFieldId);
 
   try {
     await kvs.set(cacheKey, { issueData, cachedAt: Date.now() });
@@ -390,6 +489,28 @@ function dayLabel(dayStr) {
   return new Date(dayStr + 'T12:00:00Z').toLocaleDateString('en-AU', { day: '2-digit', month: 'short' });
 }
 
+// Reconstructs an issue's status as of a given instant from its transition
+// history. Shared by TRI-Burndown (statusMapping-based phase lookup) and
+// TRI-Space-Capacity's Kanban committed calc (status whitelist lookup).
+// `currentStatus` is the fallback for an issue with ZERO recorded status
+// transitions — Jira's changelog only records CHANGES, so a ticket created
+// directly into a status and never moved has no transition to infer its
+// original status from. Since it's never changed, its current status IS what
+// it was at any point in its history, including `atMs`. Without this
+// fallback, such a ticket resolved to the literal string 'unknown', which
+// can't match any real status name or category — a real bug found 2026-07-29
+// where Kanban tickets created straight into a custom "committed" status
+// (never transitioned since) were silently never counted as committed.
+function statusAt(transitions, atMs, currentStatus) {
+  if (!transitions.length) return currentStatus ?? 'unknown';
+  let st = transitions[0].from || 'unknown';
+  for (const t of transitions) {
+    if (Date.parse(t.ts) <= atMs) st = t.to;
+    else break;
+  }
+  return st;
+}
+
 // Computes: committed (grace-window) scope, per-day net delta, and the first
 // "excluded"/removed timestamp per issue (used to gate later calcs).
 //
@@ -400,10 +521,14 @@ function dayLabel(dayStr) {
 // a sprint's start date was backdated (started late, with an earlier date
 // entered in the Start Sprint dialog), widen this to cover the gap between
 // the entered start date and the real planning/activation date.
+function graceCutoffMs(startDateISO, graceWindowHours) {
+  return new Date(startDateISO).getTime() + graceWindowHours * 3600 * 1000;
+}
+
 function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, graceWindowHours = 12) {
   const startDate = bizDays[0];
   const endDate   = bizDays[bizDays.length - 1];
-  const graceCutoffMs = new Date(sprint.startDate).getTime() + graceWindowHours * 3600 * 1000;
+  const cutoffMs = graceCutoffMs(sprint.startDate, graceWindowHours);
 
   const initialCommitted = {};
   const scopeDeltaByDay  = {};
@@ -423,7 +548,7 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, grace
     // Committed scope: in sprint from the start (no add event, or created before
     // the sprint even existed) or added within the grace window.
     const addTs = firstAdd?.ts ?? issue.created;
-    if (!addTs || Date.parse(addTs) <= graceCutoffMs) {
+    if (!addTs || Date.parse(addTs) <= cutoffMs) {
       initialCommitted[key] = sp;
     }
 
@@ -444,7 +569,7 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, grace
   }
 
   const initialScope = Object.values(initialCommitted).reduce((s, v) => s + v, 0);
-  return { initialScope, scopeDeltaByDay, removedTsByKey, nrTsByKey, graceCutoffMs };
+  return { initialScope, scopeDeltaByDay, removedTsByKey, nrTsByKey, graceCutoffMs: cutoffMs };
 }
 
 // ── TRI-Burndown: ideal / dev remaining / review remaining / remaining ───────
@@ -475,17 +600,6 @@ function computeBurndown(sprint, issueData, statusMapping, graceWindowHours, cli
   for (const key of allKeys) {
     const t = issueData[key].transitions.find(t => statusMapping[t.to] === 'done');
     if (t) doneTsByKey[key] = t.ts;
-  }
-
-  function statusAt(key, eodMs) {
-    const trans = issueData[key].transitions;
-    if (!trans.length) return 'unknown';
-    let st = trans[0].from || 'unknown';
-    for (const t of trans) {
-      if (Date.parse(t.ts) <= eodMs) st = t.to;
-      else break;
-    }
-    return st;
   }
 
   const labels          = [];
@@ -521,7 +635,7 @@ function computeBurndown(sprint, issueData, statusMapping, graceWindowHours, cli
 
       if (doneTsByKey[key] && Date.parse(doneTsByKey[key]) <= eodMs) doneSp += sp;
 
-      const phase = statusMapping[statusAt(key, eodMs)] || 'backlog';
+      const phase = statusMapping[statusAt(issueData[key].transitions, eodMs, issueData[key].currentStatus)] || 'backlog';
       if (phase === 'review' || phase === 'test' || phase === 'done') devSp    += sp;
       if (phase === 'test'   || phase === 'done')                     reviewSp += sp;
     }
@@ -860,23 +974,22 @@ resolver.define('getCycleTimeData', async ({ payload }) => {
   return { data, fromCache };
 });
 
-// ── TRI-Velocity: committed vs completed SP per closed sprint, per space ─────
-// Reuses the exact same "committed scope" (grace-window) and "done" phase
-// logic as TRI Burndown so a space's velocity numbers here are internally
-// consistent with what that space's Burndown widget would show for the same
-// sprint/mapping — rather than trying to replicate Jira's own Velocity
-// Report, which is powered by an undocumented board-report endpoint outside
-// the public Agile REST API this app otherwise sticks to (see PROJECT-CONTEXT.md).
+// ── TRI-Velocity: Capacity/Committed/Velocity per closed sprint or completed
+// iteration, per space ───────────────────────────────────────────────────────
+// This gadget no longer computes anything itself — it reads the same numbers
+// already saved by that space's Capacity tab (capacity-rows for Scrum,
+// kanban-iterations for Kanban), so a space's velocity trend here always
+// matches what its Capacity page shows, and there's only one place (Capacity)
+// that actually runs the grace-window/status-category math. This is also why
+// TRI Velocity's Edit screen only offers spaces with Capacity Planning turned
+// on (getCapacityEnabledProjects above) — a space with Capacity off has never
+// had these numbers computed at all. A row whose Committed/Velocity was never
+// calculated on the Capacity tab (no "Get SP Count"/"Get Velocity" click yet)
+// simply shows 0 here — this gadget never triggers that calculation itself.
 
 async function fetchClosedSprintsForBoard(projectKey, limit) {
-  const boardRes = await asUser().requestJira(
-    route`/rest/agile/1.0/board?projectKeyOrId=${projectKey}&maxResults=1`,
-    { headers: { Accept: 'application/json' } }
-  );
-  if (!boardRes.ok) return { error: `Board search failed: ${boardRes.status}` };
-  const boardBody = await boardRes.json();
-  const board = boardBody.values?.[0];
-  if (!board) return { error: 'No board found for this space.' };
+  const { board, error } = await getBoardForProject(projectKey);
+  if (error) return { error };
 
   const countRes = await asUser().requestJira(
     route`/rest/agile/1.0/board/${board.id}/sprint?state=closed&maxResults=1`,
@@ -939,35 +1052,868 @@ resolver.define('getVelocityData', async ({ payload }) => {
   const { spaces } = payload ?? {};
   if (!Array.isArray(spaces) || spaces.length === 0) return { spaces: [], error: 'No spaces configured.' };
 
+  const numOr = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+
   const results = [];
   for (const space of spaces) {
-    const { projectKey, spFieldId, statusMapping } = space ?? {};
-    if (!projectKey || !spFieldId || !statusMapping) {
+    const { projectKey } = space ?? {};
+    if (!projectKey) {
       results.push({ projectKey, name: projectKey, sprints: [], error: 'Incomplete configuration.' });
       continue;
     }
     try {
       const name = await getSpaceName(projectKey);
-      const { sprints, error } = await fetchClosedSprintsForBoard(projectKey, VELOCITY_SPRINT_CAP);
-      if (error) { results.push({ projectKey, name, sprints: [], error }); continue; }
+      const { board, error: boardErr } = await getBoardForProject(projectKey);
+      if (boardErr) { results.push({ projectKey, name, sprints: [], error: boardErr }); continue; }
+      const settings = await getCapacitySettingsFor(projectKey);
 
-      const sprintRows = [];
-      for (const sprint of sprints) {
-        let issueData;
-        try {
-          ({ issueData } = await getSprintRawData({ projectKey, sprint, spFieldId }));
-        } catch (e) {
-          continue; // skip a sprint whose issue fetch failed rather than failing the whole space
-        }
-        const v = computeVelocity(sprint, issueData, statusMapping);
-        if (v) sprintRows.push({ id: sprint.id, name: sprint.name, endDate: v.endDate, committed: v.committed, velocity: v.completed });
+      let periods;
+      if (board.type === 'kanban') {
+        const iterations = (await getIterations(projectKey))
+          .filter(it => it.status === 'completed')
+          .sort((a, b) => Date.parse(a.endDate || a.startDate || 0) - Date.parse(b.endDate || b.startDate || 0))
+          .slice(-VELOCITY_SPRINT_CAP);
+        periods = iterations.map(it => ({
+          id: it.id, name: it.name, startDate: it.startDate, endDate: it.endDate,
+          capacity: numOr(it.capacitySp, settings.baseCapacitySp),
+          committed: numOr(it.committedSp, 0),
+          velocity: numOr(it.velocitySp, 0),
+        }));
+      } else {
+        const { sprints, error: sprintErr } = await fetchClosedSprintsForBoard(projectKey, VELOCITY_SPRINT_CAP);
+        if (sprintErr) { results.push({ projectKey, name, sprints: [], error: sprintErr }); continue; }
+        const overrides = await getCapacityRows(projectKey);
+        periods = sprints.map(s => {
+          const row = overrides[s.id] || {};
+          return {
+            id: s.id, name: s.name, startDate: s.startDate, endDate: actualSprintEnd(s) || s.endDate,
+            capacity: numOr(row.capacitySp, settings.baseCapacitySp),
+            committed: numOr(row.committedSp, 0),
+            velocity: numOr(row.velocitySp, 0),
+          };
+        });
       }
-      results.push({ projectKey, name, sprints: sprintRows });
+      results.push({ projectKey, name, sprints: periods });
     } catch (e) {
       results.push({ projectKey, name: projectKey, sprints: [], error: e.message });
     }
   }
   return { spaces: results };
+});
+
+// ── TRI-Space-Capacity: per-project "enable Capacity tab" toggle ────────────
+// Stored as a Jira project entity property (not @forge/kvs) because Forge's
+// jira:projectPage displayConditions.entityPropertyEqualTo can only read
+// entity properties — it has no visibility into the app's own storage. See
+// PROJECT-CONTEXT.md for why this is a project property and not kvs.
+const CAPACITY_PROPERTY_KEY = 'tri-capacity-planning';
+
+resolver.define('getCapacityPlanningEnabled', async ({ payload }) => {
+  const { projectKey } = payload ?? {};
+  if (!projectKey) return { enabled: false, error: 'No project key.' };
+  try {
+    const res = await asUser().requestJira(
+      route`/rest/api/3/project/${projectKey}/properties/${CAPACITY_PROPERTY_KEY}`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (res.status === 404) return { enabled: false };
+    if (!res.ok) return { enabled: false, error: `Jira ${res.status}` };
+    const body = await res.json();
+    return { enabled: !!body.value?.enabled };
+  } catch (e) {
+    return { enabled: false, error: e.message };
+  }
+});
+
+resolver.define('setCapacityPlanningEnabled', async ({ payload }) => {
+  const { projectKey, enabled } = payload ?? {};
+  if (!projectKey) return { error: 'No project key.' };
+  try {
+    const res = await asUser().requestJira(
+      route`/rest/api/3/project/${projectKey}/properties/${CAPACITY_PROPERTY_KEY}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !!enabled }),
+      }
+    );
+    if (!res.ok) return { error: `Jira ${res.status}` };
+    return { ok: true, enabled: !!enabled };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// TRI Velocity's Edit screen only offers spaces with Capacity Planning turned
+// on, since it now reads Capacity's saved numbers instead of computing its
+// own (see getVelocityData below). There's no bulk "projects with property X"
+// search endpoint, so this checks each project's entity property individually
+// — the same "up to 100 projects, one page" cap as getGadgetProjects, plus one
+// extra property-check request per project. Bounded and one-off (Edit mode
+// only), not a hot path.
+resolver.define('getCapacityEnabledProjects', async () => {
+  try {
+    const res = await asUser().requestJira(
+      route`/rest/api/3/project/search?maxResults=100&orderBy=name`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!res.ok) return { projects: [], error: `Jira ${res.status}` };
+    const body = await res.json();
+    const all = (body.values || []).map(p => ({ id: p.id, key: p.key, name: p.name }));
+
+    const flags = await Promise.all(all.map(async p => {
+      try {
+        const propRes = await asUser().requestJira(
+          route`/rest/api/3/project/${p.key}/properties/${CAPACITY_PROPERTY_KEY}`,
+          { headers: { Accept: 'application/json' } }
+        );
+        if (!propRes.ok) return false;
+        const propBody = await propRes.json();
+        return !!propBody.value?.enabled;
+      } catch (_) {
+        return false;
+      }
+    }));
+
+    return { projects: all.filter((_, i) => flags[i]) };
+  } catch (e) {
+    return { projects: [], error: e.message };
+  }
+});
+
+// ── TRI-Space-Capacity: settings (Base Capacity, Iteration Length, SP Field,
+// Grace Window, Kanban's "allow multiple active", Kanban's Committed-status
+// whitelist) ─────────────────────────────────────────────────────────────────
+// All stored in @forge/kvs (unlike the enable toggle above, these never need
+// to be visible to a displayCondition, so there's no reason to use a Jira
+// project property for them). Capacity deliberately does NOT use the other
+// gadgets' custom 7-value status→phase mapping — see PROJECT-CONTEXT.md —
+// Scrum still just uses Jira's built-in status category. Kanban's Committed
+// calculation is the one exception: `kanbanCommittedStatuses` lets a project
+// whitelist exactly which statuses count as committed, since category alone
+// can't represent a custom status like "Team Estimated" that Jira categorizes
+// as "To Do" but a team treats as already-committed (see
+// defaultCommittedStatusNames() above).
+
+const CAPACITY_SETTINGS_DEFAULTS = {
+  baseCapacitySp: 20,
+  defaultIterationLengthWeeks: 2,
+  spFieldId: '',
+  graceWindowHours: 12,
+  kanbanAllowMultipleActive: false,
+  boardTypeOverride: 'auto',
+  kanbanCommittedStatuses: [],
+  kanbanCommittedUsesLabelFilter: false,
+};
+const CAPACITY_BOARD_TYPE_OVERRIDE_OPTIONS = ['auto', 'scrum', 'kanban'];
+
+// Extracted so TRI Velocity's getVelocityData (below) can look up a space's
+// Base Capacity without duplicating the kvs-merge-with-defaults logic.
+async function getCapacitySettingsFor(projectKey) {
+  const saved = await kvs.get(`capacity-settings:${projectKey}`);
+  return { ...CAPACITY_SETTINGS_DEFAULTS, ...(saved || {}) };
+}
+
+resolver.define('getCapacitySettings', async ({ payload }) => {
+  const { projectKey } = payload ?? {};
+  if (!projectKey) return { settings: CAPACITY_SETTINGS_DEFAULTS, error: 'No project key.' };
+  try {
+    return { settings: await getCapacitySettingsFor(projectKey) };
+  } catch (e) {
+    return { settings: CAPACITY_SETTINGS_DEFAULTS, error: e.message };
+  }
+});
+
+resolver.define('setCapacitySettings', async ({ payload }) => {
+  const { projectKey, settings } = payload ?? {};
+  if (!projectKey || !settings) return { error: 'Missing project key or settings.' };
+  const merged = {
+    baseCapacitySp: Number(settings.baseCapacitySp) || 0,
+    defaultIterationLengthWeeks: Number(settings.defaultIterationLengthWeeks) || 2,
+    spFieldId: settings.spFieldId || '',
+    graceWindowHours: Number(settings.graceWindowHours) || 12,
+    kanbanAllowMultipleActive: !!settings.kanbanAllowMultipleActive,
+    boardTypeOverride: CAPACITY_BOARD_TYPE_OVERRIDE_OPTIONS.includes(settings.boardTypeOverride)
+      ? settings.boardTypeOverride : 'auto',
+    kanbanCommittedStatuses: Array.isArray(settings.kanbanCommittedStatuses)
+      ? settings.kanbanCommittedStatuses.filter(s => typeof s === 'string' && s)
+      : [],
+    kanbanCommittedUsesLabelFilter: !!settings.kanbanCommittedUsesLabelFilter,
+  };
+  try {
+    await kvs.set(`capacity-settings:${projectKey}`, merged);
+    return { ok: true, settings: merged };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('getCapacityBoardInfo', async ({ payload }) => {
+  const { projectKey } = payload ?? {};
+  if (!projectKey) return { error: 'No project key.' };
+  const { board, error } = await getBoardForProject(projectKey);
+  if (error) return { error };
+  const detectedType = board.type === 'kanban' ? 'kanban' : 'scrum';
+
+  let override = 'auto';
+  try {
+    const settings = await kvs.get(`capacity-settings:${projectKey}`);
+    if (CAPACITY_BOARD_TYPE_OVERRIDE_OPTIONS.includes(settings?.boardTypeOverride)) override = settings.boardTypeOverride;
+  } catch (_) {}
+
+  const boardType = override === 'auto' ? detectedType : override;
+  return { boardId: board.id, boardType, detectedType };
+});
+
+// Every status mapped to 'done' or 'other' by Jira's own status category —
+// lets Capacity reuse computeScopeFoundation/computeVelocity unchanged (they
+// take a statusMapping) without pulling in the other gadgets' custom
+// Backlog/Dev/Blocked/Review/Test/Done/Excluded mapping. 'excluded' never
+// appears — Capacity has no equivalent concept.
+function categoryBasedStatusMapping(categoryMap) {
+  const mapping = {};
+  for (const [name, cat] of Object.entries(categoryMap)) {
+    mapping[name] = cat === 'done' ? 'done' : 'other';
+  }
+  return mapping;
+}
+
+async function getCapacityStatusMapping(projectKey) {
+  const { statuses, error } = await fetchProjectStatuses(projectKey);
+  if (error) return { error };
+  return { statusMapping: categoryBasedStatusMapping(toCategoryMap(statuses)) };
+}
+
+// Kanban's Committed calculation used to rely solely on Jira's status
+// category — but a status category is fixed by Jira and can't reflect a
+// team's actual workflow. A team can have a custom status like "Team
+// Estimated" that Jira categorizes as "To Do" but that the team treats as
+// already-committed work. `kanbanCommittedStatuses` (a Capacity setting,
+// Kanban-only) is an explicit whitelist of status names that overrides the
+// category guess entirely once configured. This is the default used until a
+// project customizes it — Committed's original spec is "in progress statuses
+// at the start of the iteration", so the default is In Progress-category
+// (`indeterminate`) only, not Done — a ticket that's been sitting in a
+// terminal Done status since long before this iteration has nothing to do
+// with it, even though it was presumably "committed" to whatever iteration
+// actually finished it. Someone whose workflow genuinely needs a
+// Done-categorized status counted (e.g. a "Deployed, pending sign-off" status
+// Jira happens to categorize as Done) can still check it explicitly in
+// TriCapacitySettingsPage.jsx's checklist.
+function defaultCommittedStatusNames(categoryMap) {
+  return Object.entries(categoryMap)
+    .filter(([, cat]) => cat === 'indeterminate')
+    .map(([name]) => name);
+}
+
+function jqlQuoteList(values) {
+  return values.map(v => `"${String(v).replace(/"/g, '\\"')}"`).join(', ');
+}
+
+// ── TRI-Space-Capacity (Scrum): sprint list + Capacity/Committed/Velocity ────
+// Sprints are real Jira objects — Committed/Velocity reuse computeScopeFoundation/
+// computeVelocity exactly as TRI Burndown/Velocity do, just fed a status-category
+// mapping (above) instead of a custom one. Per-row overrides (Capacity/Committed/
+// Velocity) are stored in one KVS blob per project, not one key per row, so the
+// sprint list only ever needs a single kvs.get to merge them in.
+
+const CAPACITY_CLOSED_SPRINT_CAP = 10;
+// "All" is intentionally bounded, not literally unlimited — same known-simplification
+// class as this app's other pagination caps (see PROJECT-CONTEXT.md). A project with
+// more closed sprints than this just sees its most recent CAPACITY_CLOSED_SPRINT_ALL_CAP.
+const CAPACITY_CLOSED_SPRINT_ALL_CAP = 100;
+const CAPACITY_CLOSED_LIMIT_OPTIONS = [3, 5, 10, 15];
+
+function resolveClosedLimit(closedLimit) {
+  if (closedLimit === 'all') return 'all';
+  const n = Number(closedLimit);
+  return CAPACITY_CLOSED_LIMIT_OPTIONS.includes(n) ? n : CAPACITY_CLOSED_SPRINT_CAP;
+}
+
+async function fetchSprintsByState(boardId, state, limit) {
+  if (state === 'closed') {
+    const countRes = await asUser().requestJira(
+      route`/rest/agile/1.0/board/${boardId}/sprint?state=closed&maxResults=1`,
+      { headers: { Accept: 'application/json' } }
+    );
+    const total = countRes.ok ? (await countRes.json()).total ?? 0 : 0;
+    const effectiveLimit = limit === 'all' ? Math.min(total, CAPACITY_CLOSED_SPRINT_ALL_CAP) : limit;
+    const startAt = Math.max(0, total - effectiveLimit);
+    const res = await asUser().requestJira(
+      route`/rest/agile/1.0/board/${boardId}/sprint?state=closed&startAt=${startAt}&maxResults=${effectiveLimit}`,
+      { headers: { Accept: 'application/json' } }
+    );
+    const body = res.ok ? await res.json() : { values: [] };
+    return body.values || [];
+  }
+  const res = await asUser().requestJira(
+    route`/rest/agile/1.0/board/${boardId}/sprint?state=${state}&maxResults=${limit}`,
+    { headers: { Accept: 'application/json' } }
+  );
+  const body = res.ok ? await res.json() : { values: [] };
+  return body.values || [];
+}
+
+async function getCapacityRows(projectKey) {
+  try {
+    return (await kvs.get(`capacity-rows:${projectKey}`)) || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+async function updateCapacityRow(projectKey, sprintId, patch) {
+  const rows = await getCapacityRows(projectKey);
+  rows[sprintId] = { ...(rows[sprintId] || {}), ...patch };
+  await kvs.set(`capacity-rows:${projectKey}`, rows);
+  return rows[sprintId];
+}
+
+resolver.define('getScrumSprintsForCapacity', async ({ payload }) => {
+  const { projectKey, closedLimit } = payload ?? {};
+  if (!projectKey) return { sprints: [], error: 'No project key.' };
+  try {
+    const { board, error } = await getBoardForProject(projectKey);
+    if (error) return { sprints: [], error };
+
+    const [active, future, closed] = await Promise.all([
+      fetchSprintsByState(board.id, 'active', 10),
+      fetchSprintsByState(board.id, 'future', 20),
+      fetchSprintsByState(board.id, 'closed', resolveClosedLimit(closedLimit)),
+    ]);
+
+    const overrides = await getCapacityRows(projectKey);
+    const shape = (s, state) => ({
+      id: s.id, name: s.name, state, startDate: s.startDate, endDate: s.endDate,
+      completeDate: s.completeDate, goal: s.goal || '',
+      capacitySp: null, committedSp: null, committedAt: null, velocitySp: null, velocityAt: null,
+      ...(overrides[s.id] || {}),
+    });
+
+    const sprints = [
+      ...active.map(s => shape(s, 'active')),
+      ...future.map(s => shape(s, 'future')),
+      ...closed
+        .sort((a, b) => Date.parse(b.endDate || b.startDate || 0) - Date.parse(a.endDate || a.startDate || 0))
+        .map(s => shape(s, 'closed')),
+    ];
+
+    return { sprints, boardId: board.id };
+  } catch (e) {
+    return { sprints: [], error: e.message };
+  }
+});
+
+resolver.define('getSprintCommittedSp', async ({ payload }) => {
+  const { projectKey, sprintId, spFieldId, graceWindowHours } = payload ?? {};
+  if (!projectKey || !sprintId || !spFieldId) return { error: 'Missing config.' };
+  try {
+    const sprintRes = await asUser().requestJira(
+      route`/rest/agile/1.0/sprint/${sprintId}`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!sprintRes.ok) return { error: `Failed to fetch sprint: ${sprintRes.status}` };
+    const sprint = await sprintRes.json();
+
+    let committedSp;
+    if (sprint.state === 'future') {
+      // No grace-window concept yet for a sprint that hasn't started — just
+      // sum the SP of whatever's currently assigned to it.
+      const { issueData } = await getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh: true });
+      committedSp = Math.round(Object.values(issueData).reduce((a, i) => a + (i.sp || 0), 0) * 10) / 10;
+    } else {
+      const { issueData } = await getSprintRawData({ projectKey, sprint, spFieldId });
+      const startDate = sprint.startDate?.slice(0, 10);
+      if (!startDate) return { error: 'Sprint has no start date yet.' };
+      const endDate = actualSprintEnd(sprint)?.slice(0, 10) || startDate;
+      const bizDays = getBusinessDays(startDate, endDate);
+      if (!bizDays.length) return { error: 'Sprint has no start date yet.' };
+      const { statusMapping, error: mapErr } = await getCapacityStatusMapping(projectKey);
+      if (mapErr) return { error: mapErr };
+      const { initialScope } = computeScopeFoundation(sprint, issueData, statusMapping, bizDays, Number(graceWindowHours) || 12);
+      committedSp = Math.round(initialScope * 10) / 10;
+    }
+    await updateCapacityRow(projectKey, sprintId, { committedSp, committedAt: new Date().toISOString() });
+    return { committedSp };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('setSprintCommittedSp', async ({ payload }) => {
+  const { projectKey, sprintId, committedSp } = payload ?? {};
+  if (!projectKey || !sprintId) return { error: 'Missing config.' };
+  try {
+    await updateCapacityRow(projectKey, sprintId, {
+      committedSp: committedSp == null ? null : Number(committedSp),
+      committedAt: new Date().toISOString(),
+    });
+    return { ok: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('getSprintVelocitySp', async ({ payload }) => {
+  const { projectKey, sprintId, spFieldId, graceWindowHours } = payload ?? {};
+  if (!projectKey || !sprintId || !spFieldId) return { error: 'Missing config.' };
+  try {
+    const sprintRes = await asUser().requestJira(
+      route`/rest/agile/1.0/sprint/${sprintId}`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!sprintRes.ok) return { error: `Failed to fetch sprint: ${sprintRes.status}` };
+    const sprint = await sprintRes.json();
+    if (sprint.state === 'future') return { velocitySp: 0 };
+
+    const { issueData } = await getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh: sprint.state === 'active' });
+    const { statusMapping, error: mapErr } = await getCapacityStatusMapping(projectKey);
+    if (mapErr) return { error: mapErr };
+    const v = computeVelocity(sprint, issueData, statusMapping, Number(graceWindowHours) || 12);
+    const velocitySp = v ? v.completed : 0;
+    await updateCapacityRow(projectKey, sprintId, { velocitySp, velocityAt: new Date().toISOString() });
+    return { velocitySp };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('setSprintVelocitySp', async ({ payload }) => {
+  const { projectKey, sprintId, velocitySp } = payload ?? {};
+  if (!projectKey || !sprintId) return { error: 'Missing config.' };
+  try {
+    const sprintRes = await asUser().requestJira(
+      route`/rest/agile/1.0/sprint/${sprintId}`,
+      { headers: { Accept: 'application/json' } }
+    );
+    // Server-side re-check rather than trusting the client's idea of sprint
+    // state — a manual Velocity edit is only meaningful once a sprint is closed.
+    if (sprintRes.ok) {
+      const sprint = await sprintRes.json();
+      if (sprint.state !== 'closed') return { error: 'Velocity can only be hand-edited once the sprint is closed.' };
+    }
+    await updateCapacityRow(projectKey, sprintId, {
+      velocitySp: velocitySp == null ? null : Number(velocitySp),
+      velocityAt: new Date().toISOString(),
+    });
+    return { ok: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('setSprintCapacityOverride', async ({ payload }) => {
+  const { projectKey, sprintId, capacitySp } = payload ?? {};
+  if (!projectKey || !sprintId) return { error: 'Missing config.' };
+  try {
+    await updateCapacityRow(projectKey, sprintId, { capacitySp: capacitySp == null ? null : Number(capacitySp) });
+    return { ok: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// Deliberately excludes `name` — requirements limit editing to the sprint's
+// Goal ("description" in the requirements' wording; Jira's actual field is
+// `goal`) and dates. Uses POST (Jira's *partial* sprint update) rather than
+// PUT (full update) specifically so omitting `name` never risks clearing it.
+resolver.define('updateSprintGoalAndDates', async ({ payload }) => {
+  const { sprintId, goal, startDate, endDate } = payload ?? {};
+  if (!sprintId) return { error: 'No sprint id.' };
+  const body = { goal: goal ?? '' };
+  if (startDate) body.startDate = startDate;
+  if (endDate) body.endDate = endDate;
+  try {
+    const res = await asUser().requestJira(
+      route`/rest/agile/1.0/sprint/${sprintId}`,
+      {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }
+    );
+    if (!res.ok) {
+      const txt = await res.text();
+      return { error: `Jira ${res.status}: ${txt}` };
+    }
+    return { ok: true, sprint: await res.json() };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// ── TRI-Space-Capacity (Kanban): iterations are 100% app-invented date ranges
+// with no Jira representation at all — full CRUD lives in @forge/kvs, keyed
+// per project. See PROJECT-CONTEXT.md for why (no native Kanban grouping to
+// hang a "sprint"-like object off).
+
+async function getIterations(projectKey) {
+  try {
+    return (await kvs.get(`kanban-iterations:${projectKey}`)) || [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function saveIterations(projectKey, iterations) {
+  await kvs.set(`kanban-iterations:${projectKey}`, iterations);
+  return iterations;
+}
+
+// Shared by saveKanbanIteration and setKanbanIterationStatus — decision:
+// BLOCK rather than auto-flip the previously-Active iteration when
+// kanbanAllowMultipleActive is off, so the app never silently changes a row
+// the user didn't touch.
+async function checkSingleActiveIteration(projectKey, iterations, changedId, newStatus) {
+  if (newStatus !== 'active') return null;
+  let settings = {};
+  try { settings = (await kvs.get(`capacity-settings:${projectKey}`)) || {}; } catch (_) {}
+  if (settings.kanbanAllowMultipleActive) return null;
+  const otherActive = iterations.find(it => it.id !== changedId && it.status === 'active');
+  if (!otherActive) return null;
+  return `Iteration "${otherActive.name}" is already Active — set it to Future or Completed first.`;
+}
+
+resolver.define('getKanbanIterations', async ({ payload }) => {
+  const { projectKey } = payload ?? {};
+  if (!projectKey) return { iterations: [] };
+  return { iterations: await getIterations(projectKey) };
+});
+
+resolver.define('saveKanbanIteration', async ({ payload }) => {
+  const { projectKey, iteration } = payload ?? {};
+  if (!projectKey || !iteration || !iteration.name || !iteration.startDate || !iteration.endDate) {
+    return { error: 'Missing project key, iteration name, or dates.' };
+  }
+  try {
+    const iterations = await getIterations(projectKey);
+    const isNew = !iteration.id;
+    const id = iteration.id || `it-${crypto.randomUUID()}`;
+
+    const blockErr = await checkSingleActiveIteration(projectKey, iterations, id, iteration.status || 'future');
+    if (blockErr) return { error: blockErr };
+
+    const existing = iterations.find(it => it.id === id);
+    const now = new Date().toISOString();
+    const record = {
+      id,
+      name: iteration.name,
+      description: iteration.description || '',
+      capacitySp: Number(iteration.capacitySp) || 0,
+      startDate: iteration.startDate,
+      endDate: iteration.endDate,
+      status: iteration.status || 'future',
+      labelFilter: iteration.labelFilter || '',
+      committedSp: existing?.committedSp ?? null,
+      committedAt: existing?.committedAt ?? null,
+      velocitySp: existing?.velocitySp ?? null,
+      velocityAt: existing?.velocityAt ?? null,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+
+    const next = isNew ? [...iterations, record] : iterations.map(it => it.id === id ? record : it);
+    await saveIterations(projectKey, next);
+    return { iterations: next };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('deleteKanbanIteration', async ({ payload }) => {
+  const { projectKey, iterationId } = payload ?? {};
+  if (!projectKey || !iterationId) return { error: 'Missing config.' };
+  try {
+    const iterations = await getIterations(projectKey);
+    const next = iterations.filter(it => it.id !== iterationId);
+    await saveIterations(projectKey, next);
+    return { iterations: next };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('setKanbanIterationStatus', async ({ payload }) => {
+  const { projectKey, iterationId, status } = payload ?? {};
+  if (!projectKey || !iterationId || !status) return { error: 'Missing config.' };
+  try {
+    const iterations = await getIterations(projectKey);
+    if (!iterations.some(it => it.id === iterationId)) return { error: 'Iteration not found.' };
+
+    const blockErr = await checkSingleActiveIteration(projectKey, iterations, iterationId, status);
+    if (blockErr) return { error: blockErr };
+
+    const next = iterations.map(it => it.id === iterationId ? { ...it, status, updatedAt: new Date().toISOString() } : it);
+    await saveIterations(projectKey, next);
+    return { iterations: next };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// Mirrors fetchSprintIssues, but bounded by JQL instead of sprint membership
+// (Kanban issues have no Sprint field). Fetches `labels` too, for the
+// optional per-iteration label filter (applies to both Committed and Velocity).
+async function fetchIterationIssues(jql, spFieldId) {
+  const fields = ['summary', 'status', 'issuetype', 'created', 'labels', spFieldId];
+  const allIssues = [];
+  let nextPageToken;
+
+  while (true) {
+    const reqBody = { jql, fields, expand: 'changelog', maxResults: 50 };
+    if (nextPageToken) reqBody.nextPageToken = nextPageToken;
+
+    const searchRes = await asUser().requestJira(
+      route`/rest/api/3/search/jql`,
+      {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(reqBody),
+      }
+    );
+    if (!searchRes.ok) {
+      const txt = await searchRes.text();
+      throw new Error(`Issue search failed (${searchRes.status}): ${txt}`);
+    }
+    const body = await searchRes.json();
+    const issues = body.issues || [];
+    allIssues.push(...issues);
+    nextPageToken = body.nextPageToken;
+    if (!issues.length || !nextPageToken) break;
+  }
+  return allIssues;
+}
+
+// Same trimming as extractRawSprintData, minus the Sprint-changelog parsing —
+// no sprintEvents concept for Kanban issues, just status transitions + labels.
+async function extractIterationIssueData(issues, spFieldId) {
+  const spByKey = await resolveIssueSpValues(issues, spFieldId);
+  const issueData = {};
+  for (const issue of issues) {
+    const transitions = [];
+    for (const h of (issue.changelog?.histories || [])) {
+      for (const item of (h.items || [])) {
+        if (item.field === 'status') {
+          transitions.push({ ts: h.created, from: item.fromString, to: item.toString });
+        }
+      }
+    }
+    transitions.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    issueData[issue.key] = {
+      sp: spByKey.get(issue.key),
+      summary: issue.fields?.summary ?? '',
+      created: issue.fields?.created ?? null,
+      currentStatus: issue.fields?.status?.name ?? null,
+      labels: issue.fields?.labels ?? [],
+      transitions,
+    };
+  }
+  return issueData;
+}
+
+function jqlDateOnly(ms) {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+// Committed scan is bounded to issues that were in one of the committed-
+// eligible statuses within a window around the cutoff (`status WAS IN (...)
+// DURING (...)`, a JQL historical-value operator), not literally the whole
+// project and not purely time-windowed — a strictly `updated >=` bound could
+// miss an issue that's been sitting untouched in an in-progress status since
+// before the window, and a *current* `status IN (...)` bound would miss one
+// that was committed at the cutoff but has since moved on (e.g. to Done, or
+// back to a real To Do status). `WAS IN` catches both, evaluating the field's
+// historical value rather than just its current one.
+//
+// The `DURING` bound is a required performance fix, not an optional nicety —
+// Jira's own guidance is that `WAS`/`CHANGED`-family clauses without a date
+// bound force a full changelog scan of every matching issue's entire
+// lifetime, which timed out (Forge's 25s function limit) on a real,
+// long-running Kanban project. `DURING` narrows that scan to a small window
+// instead. The ±2-day pad around the exact cutoff instant isn't about the
+// grace window (already baked into `cutoffMs`) — it's slack for the fact that
+// Jira evaluates JQL date literals in the site's own configured timezone,
+// which can land on a different calendar day than our UTC-computed cutoff.
+// This can only ever widen the fetched set (more issues re-checked by the
+// precise, hour-accurate `statusAt()` call afterward), never narrow it below
+// what's actually needed, so it can't silently drop an eligible issue.
+async function getIterationCommittedRawData(projectKey, spFieldId, forceRefresh, committedStatuses, cutoffMs) {
+  if (!committedStatuses?.length) return { issueData: {} };
+  const cacheKey = `raw-kanban:${projectKey}:${spFieldId}:${cutoffMs}`;
+  if (!forceRefresh) {
+    try {
+      const cached = await kvs.get(cacheKey);
+      if (cached && (Date.now() - cached.cachedAt) <= ACTIVE_CACHE_TTL_MS) {
+        return { issueData: cached.issueData };
+      }
+    } catch (_) {}
+  }
+  const windowStart = jqlDateOnly(cutoffMs - 2 * 86400000);
+  const windowEnd = jqlDateOnly(cutoffMs + 2 * 86400000);
+  // An issue created after the cutoff didn't exist yet, so it can't have been
+  // committed to this iteration — excluding it narrows the candidate set
+  // further (fewer irrelevant issues to fetch/expand) on top of the DURING
+  // bound above. Bounded by the same padded `windowEnd`, not the exact
+  // cutoff, for the same site-timezone-vs-UTC reason as the DURING window;
+  // computeIterationCommitted() re-checks the exact `created` timestamp
+  // against the precise cutoff afterward, so this can only over-fetch, never
+  // wrongly exclude a genuinely-eligible issue.
+  const jql = `project = "${projectKey}" AND status WAS IN (${jqlQuoteList(committedStatuses)}) DURING ("${windowStart}", "${windowEnd}") AND created <= "${windowEnd}"`;
+  const issues = await fetchIterationIssues(jql, spFieldId);
+  const issueData = await extractIterationIssueData(issues, spFieldId);
+  try { await kvs.set(cacheKey, { issueData, cachedAt: Date.now() }); } catch (_) {}
+  return { issueData };
+}
+
+// `committedStatusNames` is the explicit whitelist (custom, or the
+// category-based default) — a ticket counts as committed if it was in one of
+// these statuses at the grace-window cutoff, regardless of what Jira's status
+// category says that status is. An issue created after the cutoff is skipped
+// outright — it didn't exist yet, so whatever status `statusAt` reports for
+// it (its actual initial status, since its very first transition necessarily
+// happened after the cutoff too) reflects mid-iteration scope creep, not
+// something that was genuinely committed at the start. `labelFilter` is only
+// passed in when the `kanbanCommittedUsesLabelFilter` setting is on (off by
+// default) — the caller is responsible for zeroing it out otherwise, since
+// unlike Velocity, whether a release-train label should scope "what counts as
+// committed" at all is a per-project judgment call, not an obvious yes.
+function computeIterationCommitted(issueData, committedStatusNames, cutoffMs, labelFilter) {
+  const committedSet = new Set(committedStatusNames);
+  let committed = 0;
+  for (const issue of Object.values(issueData)) {
+    const sp = issue.sp || 0;
+    if (!sp) continue;
+    if (labelFilter && !(issue.labels || []).includes(labelFilter)) continue;
+    if (issue.created && Date.parse(issue.created) > cutoffMs) continue;
+    if (committedSet.has(statusAt(issue.transitions, cutoffMs, issue.currentStatus))) committed += sp;
+  }
+  return Math.round(committed * 10) / 10;
+}
+
+function computeIterationVelocity(issueData, categoryMap, startMs, endMs, labelFilter) {
+  let velocity = 0;
+  for (const issue of Object.values(issueData)) {
+    const sp = issue.sp || 0;
+    if (!sp) continue;
+    if (labelFilter && !(issue.labels || []).includes(labelFilter)) continue;
+    const doneTrans = issue.transitions.find(t => categoryMap[t.to] === 'done');
+    if (!doneTrans) continue;
+    const ts = Date.parse(doneTrans.ts);
+    if (ts >= startMs && ts <= endMs) velocity += sp;
+  }
+  return Math.round(velocity * 10) / 10;
+}
+
+resolver.define('getIterationCommittedSp', async ({ payload }) => {
+  const { projectKey, iterationId, spFieldId, graceWindowHours } = payload ?? {};
+  if (!projectKey || !iterationId || !spFieldId) return { error: 'Missing config.' };
+  try {
+    const iterations = await getIterations(projectKey);
+    const iteration = iterations.find(it => it.id === iterationId);
+    if (!iteration) return { error: 'Iteration not found.' };
+
+    const { statuses, error } = await fetchProjectStatuses(projectKey);
+    if (error) return { error };
+    const categoryMap = toCategoryMap(statuses);
+
+    const settings = await getCapacitySettingsFor(projectKey);
+    const committedStatuses = settings.kanbanCommittedStatuses.length
+      ? settings.kanbanCommittedStatuses
+      : defaultCommittedStatusNames(categoryMap);
+
+    const cutoffMs = graceCutoffMs(iteration.startDate, Number(graceWindowHours) || 12);
+    const { issueData } = await getIterationCommittedRawData(projectKey, spFieldId, true, committedStatuses, cutoffMs);
+    const labelFilter = settings.kanbanCommittedUsesLabelFilter ? iteration.labelFilter : '';
+    const committedSp = computeIterationCommitted(issueData, committedStatuses, cutoffMs, labelFilter);
+
+    const next = iterations.map(it => it.id === iterationId
+      ? { ...it, committedSp, committedAt: new Date().toISOString() } : it);
+    await saveIterations(projectKey, next);
+    return { committedSp };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('setIterationCommittedSp', async ({ payload }) => {
+  const { projectKey, iterationId, committedSp } = payload ?? {};
+  if (!projectKey || !iterationId) return { error: 'Missing config.' };
+  try {
+    const iterations = await getIterations(projectKey);
+    if (!iterations.some(it => it.id === iterationId)) return { error: 'Iteration not found.' };
+    const next = iterations.map(it => it.id === iterationId
+      ? { ...it, committedSp: committedSp == null ? null : Number(committedSp), committedAt: new Date().toISOString() }
+      : it);
+    await saveIterations(projectKey, next);
+    return { ok: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('getIterationVelocitySp', async ({ payload }) => {
+  const { projectKey, iterationId, spFieldId } = payload ?? {};
+  if (!projectKey || !iterationId || !spFieldId) return { error: 'Missing config.' };
+  try {
+    const iterations = await getIterations(projectKey);
+    const iteration = iterations.find(it => it.id === iterationId);
+    if (!iteration) return { error: 'Iteration not found.' };
+
+    const { statuses, error } = await fetchProjectStatuses(projectKey);
+    if (error) return { error };
+    const categoryMap = toCategoryMap(statuses);
+
+    // `resolved` (Jira's resolutiondate) is a much closer proxy for "when this
+    // issue was actually finished" than `updated` — cross-checked against the
+    // real transition timestamp in computeIterationVelocity below, so this JQL
+    // bound only needs to be a reasonable pre-filter, not perfectly precise.
+    const jql = `project = "${projectKey}" AND statusCategory = Done AND resolved >= "${iteration.startDate}" AND resolved <= "${iteration.endDate}"`;
+    const issues = await fetchIterationIssues(jql, spFieldId);
+    const issueData = await extractIterationIssueData(issues, spFieldId);
+
+    const startMs = Date.parse(iteration.startDate + 'T00:00:00.000Z');
+    const endMs = Date.parse(iteration.endDate + 'T23:59:59.999Z');
+    const velocitySp = computeIterationVelocity(issueData, categoryMap, startMs, endMs, iteration.labelFilter);
+
+    const next = iterations.map(it => it.id === iterationId
+      ? { ...it, velocitySp, velocityAt: new Date().toISOString() } : it);
+    await saveIterations(projectKey, next);
+    return { velocitySp };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('setIterationVelocitySp', async ({ payload }) => {
+  const { projectKey, iterationId, velocitySp } = payload ?? {};
+  if (!projectKey || !iterationId) return { error: 'Missing config.' };
+  try {
+    const iterations = await getIterations(projectKey);
+    const iteration = iterations.find(it => it.id === iterationId);
+    if (!iteration) return { error: 'Iteration not found.' };
+    if (iteration.status !== 'completed') return { error: 'Velocity can only be hand-edited once the iteration is Completed.' };
+    const next = iterations.map(it => it.id === iterationId
+      ? { ...it, velocitySp: velocitySp == null ? null : Number(velocitySp), velocityAt: new Date().toISOString() }
+      : it);
+    await saveIterations(projectKey, next);
+    return { ok: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('setIterationCapacity', async ({ payload }) => {
+  const { projectKey, iterationId, capacitySp } = payload ?? {};
+  if (!projectKey || !iterationId) return { error: 'Missing config.' };
+  try {
+    const iterations = await getIterations(projectKey);
+    if (!iterations.some(it => it.id === iterationId)) return { error: 'Iteration not found.' };
+    const next = iterations.map(it => it.id === iterationId ? { ...it, capacitySp: Number(capacitySp) || 0 } : it);
+    await saveIterations(projectKey, next);
+    return { ok: true };
+  } catch (e) {
+    return { error: e.message };
+  }
 });
 
 exports.handler = resolver.getDefinitions();

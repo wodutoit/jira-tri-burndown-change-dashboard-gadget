@@ -37,6 +37,23 @@ export const editStyles = {
   error: { fontSize: 12, color: 'var(--over-text)', padding: '6px 10px', background: 'var(--surface-sunken)', borderRadius: 4 },
   radioRow: { display: 'flex', gap: 16, alignItems: 'center' },
   radioLabel: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' },
+
+  // ── Capacity table / dialogs (TriCapacityPage.jsx and friends) ────────────
+  table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
+  th: { textAlign: 'left', fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-subtlest)', padding: '8px 10px', borderBottom: '1px solid var(--border)' },
+  td: { padding: '8px 10px', borderBottom: '1px solid var(--border-subtle)', verticalAlign: 'middle' },
+  row: { background: 'var(--surface)' },
+  smallBtn: { background: 'transparent', border: '1px solid var(--border)', borderRadius: 4, padding: '4px 10px', fontSize: 11, fontWeight: 600, color: 'var(--brand)', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' },
+  dangerBtn: { background: 'transparent', border: '1px solid var(--over-border)', borderRadius: 4, padding: '4px 10px', fontSize: 11, fontWeight: 600, color: 'var(--over-text)', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' },
+  iconBtn: { background: 'transparent', border: 'none', color: 'var(--text-subtlest)', cursor: 'pointer', fontSize: 13, padding: '3px 6px', fontFamily: 'inherit' },
+  numInput: { width: 68, textAlign: 'center', border: '1px solid var(--border)', borderRadius: 4, background: 'var(--surface)', color: 'var(--text)', padding: '4px 6px', fontSize: 12, fontFamily: 'inherit', outline: 'none' },
+  chip: { display: 'inline-block', fontSize: 10, fontWeight: 800, letterSpacing: '0.03em', textTransform: 'uppercase', padding: '2px 8px', borderRadius: 20 },
+  dialogOverlay: { position: 'fixed', inset: 0, background: 'rgba(9,30,66,0.42)', zIndex: 110, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 },
+  dialogBox: { background: 'var(--surface)', borderRadius: 8, boxShadow: '0 12px 40px rgba(0,0,0,.3)', width: 440, maxWidth: '100%', padding: 24, color: 'var(--text)' },
+  dialogTitle: { fontSize: 16, fontWeight: 800, color: 'var(--text)' },
+  fieldLabel: { fontSize: 12, fontWeight: 700, color: 'var(--text-subtle)' },
+  textInput: { border: '1px solid var(--border)', borderRadius: 4, background: 'var(--surface)', color: 'var(--text)', padding: '8px 10px', fontSize: 13, fontFamily: 'inherit', outline: 'none' },
+  notice: { padding: '10px 12px', fontSize: 12, color: 'var(--info-text)', background: 'var(--info-bg)', border: '1px solid var(--info-border)', borderRadius: 6, lineHeight: 1.5 },
 };
 
 export function Section({ title, children, disabled }) {

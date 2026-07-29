@@ -64,15 +64,37 @@ modules:
 
     - key: sprint-tri-velocity-gadget
       title: TRI Velocity
-      description: Committed vs completed story points per closed sprint —
-        one chart per space, with an optional combined Total when more than
-        one space is configured.
+      description: Capacity, Committed, and Velocity story points per closed
+        sprint or completed iteration, read from each space's Capacity
+        Planning data — one chart per space, with an optional combined Total
+        when more than one space is configured. Only spaces with Capacity
+        Planning enabled can be added.
       thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v3/static/gadgets/public/icons/tri-velocity.svg
       resource: main
       resolver:
         function: resolver
       edit:
         resource: main
+
+  jira:projectSettingsPage:
+    - key: tri-space-capacity-settings-page
+      title: Capacity Planning
+      resource: main
+      resolver:
+        function: resolver
+
+  jira:projectPage:
+    - key: tri-space-capacity-page
+      title: Capacity
+      resource: main
+      resolver:
+        function: resolver
+      displayConditions:
+        entityPropertyEqualTo:
+          entity: project
+          propertyKey: tri-capacity-planning
+          objectName: enabled
+          value: "true"
 
   function:
     - key: resolver
@@ -92,6 +114,9 @@ permissions:
     - read:issue-details:jira
     - read:jql:jira
     - storage:app
+    - read:project.property:jira
+    - write:project.property:jira
+    - write:sprint:jira-software
 
 app:
   runtime:

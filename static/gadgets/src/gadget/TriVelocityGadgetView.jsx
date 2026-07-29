@@ -4,6 +4,7 @@ import { useVelocityEffectiveSpaces } from './useVelocityEffectiveSpaces';
 
 const TRACK_H = 70;
 const BAR_W = 15;
+const BAR_GAP = 2;
 // Value labels float above each bar via a negative transform, which can escape the
 // track's own box when a bar is near its tallest. Reserving this much margin above
 // the track keeps that label inside the row's layout box instead of overlapping
@@ -11,51 +12,102 @@ const BAR_W = 15;
 const LABEL_HEADROOM = 16;
 const SPRINT_OPTIONS = Array.from({ length: 10 }, (_, i) => i + 1);
 
-function fmtShort(iso) {
+// "dd/MMM", e.g. "17/Jul" — the format requested for the per-bar date range.
+function fmtDDMMM(iso) {
   if (!iso) return '';
-  try { return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); }
-  catch { return iso; }
+  try {
+    const d = new Date(iso);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mmm = d.toLocaleDateString(undefined, { month: 'short' });
+    return `${dd}/${mmm}`;
+  } catch { return iso; }
 }
 
-function BarGroup({ label, committed, actual, maxScale }) {
-  const cH = maxScale ? Math.min(100, committed / maxScale * 100) : 0;
-  const aH = maxScale ? Math.min(100, actual / maxScale * 100) : 0;
+// Real sprints/iterations show their name plus a "dd/MMM - dd/MMM" range;
+// the synthetic Total-chart rank labels (buildTotals, no name/dates) just
+// show their rank label alone.
+function periodLabel(s) {
+  if (s.label) return { name: s.label, range: null };
+  const range = (s.startDate && s.endDate) ? `${fmtDDMMM(s.startDate)} - ${fmtDDMMM(s.endDate)}` : '';
+  return { name: s.name ?? '', range };
+}
+
+// Width of one bar group's slot — shared with SpaceRow so it can size the
+// leading placeholder slots (see barGroupWidth below) to exactly match.
+function barGroupWidth(showCapacity) {
+  const count = showCapacity ? 3 : 2;
+  return count * BAR_W + (count - 1) * BAR_GAP + 6;
+}
+
+function BarGroup({ name, range, capacity, committed, actual, maxScale, showCapacity }) {
+  const bars = [
+    ...(showCapacity ? [['var(--brand)', capacity]] : []),
+    ['var(--filling)', committed],
+    ['var(--ok)', actual],
+  ];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: BAR_W * 2 + 6 }}>
-      <div style={{ display: 'flex', gap: 2, alignItems: 'flex-end', height: TRACK_H, marginTop: LABEL_HEADROOM }}>
-        {[['var(--filling)', committed, cH], ['var(--ok)', actual, aH]].map(([color, val, h], i) => (
-          <div key={i} style={{ position: 'relative', width: BAR_W, height: TRACK_H }}>
-            <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: `${h}%`, background: color, borderRadius: '2px 2px 0 0' }} />
-            <span style={{ position: 'absolute', left: '50%', bottom: `${h}%`, transform: 'translate(-50%, -100%)', fontSize: 9, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap' }}>
-              {val}
-            </span>
-          </div>
-        ))}
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: barGroupWidth(showCapacity) }}>
+      <div style={{ display: 'flex', gap: BAR_GAP, alignItems: 'flex-end', height: TRACK_H, marginTop: LABEL_HEADROOM }}>
+        {bars.map(([color, val], i) => {
+          const h = maxScale ? Math.min(100, val / maxScale * 100) : 0;
+          return (
+            <div key={i} style={{ position: 'relative', width: BAR_W, height: TRACK_H }}>
+              <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: `${h}%`, background: color, borderRadius: '2px 2px 0 0' }} />
+              <span style={{ position: 'absolute', left: '50%', bottom: `${h}%`, transform: 'translate(-50%, -100%)', fontSize: 9, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap' }}>
+                {val}
+              </span>
+            </div>
+          );
+        })}
       </div>
-      <span style={{ fontSize: 9, color: 'var(--text-subtlest)', whiteSpace: 'nowrap' }}>{label}</span>
+      <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-subtlest)', whiteSpace: 'nowrap' }}>{name}</span>
+      {range && <span style={{ fontSize: 8, color: 'var(--text-subtlest)', whiteSpace: 'nowrap' }}>{range}</span>}
     </div>
   );
 }
 
-function SpaceRow({ name, sprints, sprintCount }) {
+function SpaceRow({ name, sprints, sprintCount, showCapacityBar }) {
   const shown = sprints.slice(Math.max(0, sprints.length - sprintCount));
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
       <div style={{ width: 110, flexShrink: 0, fontWeight: 700, fontSize: 13, color: 'var(--text)' }}>{name}</div>
       {shown.length === 0 ? (
-        <div style={{ flex: 1, fontSize: 12, color: 'var(--text-subtlest)' }}>No closed sprints found.</div>
+        <div style={{ flex: 1, fontSize: 12, color: 'var(--text-subtlest)' }}>No closed sprints/completed iterations found.</div>
       ) : (
         <>
-          <div style={{ display: 'flex', gap: 12, flex: 1, overflowX: 'auto', paddingBottom: 2 }}>
+          <div style={{ display: 'flex', gap: 12, flex: 1, overflowX: 'auto', paddingBottom: 2, justifyContent: 'space-evenly' }}>
+            {/* Leading empty slots, sized to match a real bar group, so every row always has
+                `sprintCount` total slots — that's what makes the real bars both fill the row's
+                full width (space-evenly has something to distribute) and land in the same
+                slots across rows (a space with fewer periods than sprintCount just has more
+                empty slots up front, so its latest period still lines up with every other
+                row's latest period). */}
+            {Array.from({ length: Math.max(0, sprintCount - shown.length) }, (_, i) => (
+              <div key={`pad-${i}`} style={{ width: barGroupWidth(showCapacityBar), flexShrink: 0 }} />
+            ))}
             {(() => {
-              const maxScale = Math.max(1, ...shown.flatMap(s => [s.committed, s.velocity])) * 1.15;
-              return shown.map(s => (
-                <BarGroup key={s.id} label={s.label ?? fmtShort(s.endDate)} committed={s.committed} actual={s.velocity} maxScale={maxScale} />
-              ));
+              const values = shown.flatMap(s => showCapacityBar ? [s.capacity, s.committed, s.velocity] : [s.committed, s.velocity]);
+              const maxScale = Math.max(1, ...values) * 1.15;
+              return shown.map(s => {
+                const { name: periodName, range } = periodLabel(s);
+                return (
+                  <BarGroup
+                    key={s.id}
+                    name={periodName}
+                    range={range}
+                    capacity={s.capacity}
+                    committed={s.committed}
+                    actual={s.velocity}
+                    maxScale={maxScale}
+                    showCapacity={showCapacityBar}
+                  />
+                );
+              });
             })()}
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-subtle)', whiteSpace: 'nowrap', textAlign: 'right', flexShrink: 0 }}>
+            {showCapacityBar && <div>Avg Capacity: {Math.round(shown.reduce((s, x) => s + x.capacity, 0) / shown.length)}</div>}
             <div>Avg Commitment: {Math.round(shown.reduce((s, x) => s + x.committed, 0) / shown.length)}</div>
             <div>Avg Velocity: {Math.round(shown.reduce((s, x) => s + x.velocity, 0) / shown.length)}</div>
           </div>
@@ -65,9 +117,15 @@ function SpaceRow({ name, sprints, sprintCount }) {
   );
 }
 
-function Legend() {
+function Legend({ showCapacityBar }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 11, color: 'var(--text-subtle)' }}>
+      {showCapacityBar && (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--brand)', display: 'inline-block' }} />
+          Capacity
+        </span>
+      )}
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         <span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--filling)', display: 'inline-block' }} />
         Committed
@@ -88,16 +146,17 @@ function buildTotals(spacesData) {
   const maxLen = Math.max(0, ...spacesData.map(s => s.sprints.length));
   const ranked = [];
   for (let rank = 1; rank <= maxLen; rank++) {
-    let committed = 0, velocity = 0, any = false;
+    let capacity = 0, committed = 0, velocity = 0, any = false;
     for (const space of spacesData) {
       const idx = space.sprints.length - rank;
       if (idx >= 0) {
+        capacity  += space.sprints[idx].capacity;
         committed += space.sprints[idx].committed;
         velocity  += space.sprints[idx].velocity;
         any = true;
       }
     }
-    if (any) ranked.push({ id: `rank-${rank}`, committed, velocity });
+    if (any) ranked.push({ id: `rank-${rank}`, capacity, committed, velocity });
   }
   ranked.reverse(); // oldest -> newest, left-to-right like every other chart here
   return ranked.map((t, i) => ({ ...t, label: i === ranked.length - 1 ? 'Latest' : `T-${ranked.length - 1 - i}` }));
@@ -113,6 +172,7 @@ export default function TriVelocityGadgetView() {
 
   const source = useVelocityEffectiveSpaces(config);
   const hasConfig = !!config && Array.isArray(config.spaces) && config.spaces.length > 0;
+  const showCapacityBar = config?.showCapacityBar !== false;
 
   useEffect(() => {
     view.theme.enable().catch(() => {});
@@ -163,7 +223,7 @@ export default function TriVelocityGadgetView() {
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase', color: 'var(--text-subtlest)' }}>
-            Closed sprints{source.usingFilter && <span style={{ fontWeight: 400, textTransform: 'none' }}> · via TRI Sprint Filter</span>}
+            Periods shown{source.usingFilter && <span style={{ fontWeight: 400, textTransform: 'none' }}> · via TRI Sprint Filter</span>}
           </span>
           <select
             value={sprintCount}
@@ -173,22 +233,16 @@ export default function TriVelocityGadgetView() {
             {SPRINT_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </div>
-        <Legend />
+        <Legend showCapacityBar={showCapacityBar} />
       </div>
-
-      {source.usingDefaultMapping && (
-        <div style={{ fontSize: 11, color: 'var(--text-subtlest)', marginBottom: 8 }}>
-          Using a best-guess status mapping for the filter's space — edit this gadget to refine it.
-        </div>
-      )}
 
       {showPerSpace && spacesData.map(space => (
         space.error
           ? <div key={space.projectKey} style={{ padding: '10px 0', fontSize: 12, color: 'var(--over-text)' }}>{space.name}: {space.error}</div>
-          : <SpaceRow key={space.projectKey} name={space.name} sprints={space.sprints} sprintCount={sprintCount} />
+          : <SpaceRow key={space.projectKey} name={space.name} sprints={space.sprints} sprintCount={sprintCount} showCapacityBar={showCapacityBar} />
       ))}
 
-      {showTotal && <SpaceRow name="Total" sprints={totals} sprintCount={sprintCount} />}
+      {showTotal && <SpaceRow name="Total" sprints={totals} sprintCount={sprintCount} showCapacityBar={showCapacityBar} />}
 
       {showTotal && (
         <div style={{ fontSize: 10, color: 'var(--text-subtlest)', marginTop: 8 }}>
