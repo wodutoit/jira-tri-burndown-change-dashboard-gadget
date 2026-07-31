@@ -2018,7 +2018,7 @@ async function getIterationActiveRawData(projectKey, iterationId, spFieldId, sta
     try {
       const cached = await kvs.get(cacheKey);
       if (cached && (Date.now() - cached.cachedAt) <= ACTIVE_CACHE_TTL_MS) {
-        return { issueData: cached.issueData };
+        return { issueData: cached.issueData, fromCache: true };
       }
     } catch (_) {}
   }
@@ -2044,7 +2044,7 @@ async function getIterationActiveRawData(projectKey, iterationId, spFieldId, sta
 
   const issueData = await extractIterationIssueData([...byKey.values()], spFieldId);
   try { await kvs.set(cacheKey, { issueData, cachedAt: Date.now() }); } catch (_) {}
-  return { issueData };
+  return { issueData, fromCache: false };
 }
 
 function filterActiveDuringWindow(issueData, statusMapping, startDate, endDate) {
@@ -2067,9 +2067,9 @@ resolver.define('getKanbanReworkData', async ({ payload }) => {
   if (resolved.error) return { error: resolved.error };
   const iteration = resolved.iteration;
 
-  let issueData;
+  let issueData, fromCache;
   try {
-    ({ issueData } = await getIterationActiveRawData(
+    ({ issueData, fromCache } = await getIterationActiveRawData(
       projectKey, iteration.id, spFieldId, iteration.startDate, iteration.endDate, statusMapping, forceRefresh
     ));
   } catch (e) {
@@ -2081,7 +2081,7 @@ resolver.define('getKanbanReworkData', async ({ payload }) => {
   if (!data) return { error: 'Could not compute rework events — check iteration dates.' };
   data.spaceName = await getSpaceName(projectKey);
 
-  return { data };
+  return { data, fromCache };
 });
 
 resolver.define('getKanbanCycleTimeData', async ({ payload }) => {
@@ -2097,9 +2097,9 @@ resolver.define('getKanbanCycleTimeData', async ({ payload }) => {
   if (resolved.error) return { error: resolved.error };
   const iteration = resolved.iteration;
 
-  let issueData;
+  let issueData, fromCache;
   try {
-    ({ issueData } = await getIterationActiveRawData(
+    ({ issueData, fromCache } = await getIterationActiveRawData(
       projectKey, iteration.id, spFieldId, iteration.startDate, iteration.endDate, statusMapping, forceRefresh
     ));
   } catch (e) {
@@ -2116,7 +2116,7 @@ resolver.define('getKanbanCycleTimeData', async ({ payload }) => {
   });
   data.spaceName = await getSpaceName(projectKey);
 
-  return { data };
+  return { data, fromCache };
 });
 
 // Cumulative burn-up for a Kanban iteration — restates the reference script's
@@ -2215,9 +2215,9 @@ resolver.define('getKanbanBurnupData', async ({ payload }) => {
   if (resolved.error) return { error: resolved.error };
   const iteration = resolved.iteration;
 
-  let issueData;
+  let issueData, fromCache;
   try {
-    ({ issueData } = await getIterationActiveRawData(
+    ({ issueData, fromCache } = await getIterationActiveRawData(
       projectKey, iteration.id, spFieldId, iteration.startDate, iteration.endDate, statusMapping, forceRefresh
     ));
   } catch (e) {
@@ -2229,7 +2229,7 @@ resolver.define('getKanbanBurnupData', async ({ payload }) => {
   if (!data) return { error: 'Could not compute burn-up — check iteration dates.' };
   data.spaceName = await getSpaceName(projectKey);
 
-  return { data };
+  return { data, fromCache };
 });
 
 exports.handler = resolver.getDefinitions();

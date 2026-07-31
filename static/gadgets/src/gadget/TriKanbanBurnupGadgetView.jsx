@@ -61,6 +61,7 @@ export default function TriKanbanBurnupGadgetView() {
   const [error, setError]       = useState(null);
   const [data, setData]         = useState(null);
   const [config, setConfig]     = useState(null);
+  const [fromCache, setFromCache] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   async function fetchData(cfg, forceRefresh = false) {
@@ -76,6 +77,7 @@ export default function TriKanbanBurnupGadgetView() {
     });
     if (result.error) throw new Error(result.error);
     setData(result.data);
+    setFromCache(result.fromCache ?? false);
   }
 
   const hasConfig = (cfg) =>
@@ -140,6 +142,7 @@ export default function TriKanbanBurnupGadgetView() {
           <div style={{ fontSize: 14, fontWeight: 700 }}>{data.spaceName ? `${data.spaceName}: ${data.iterationName}` : data.iterationName}</div>
           <div style={{ fontSize: 11, color: 'var(--text-subtlest)' }}>
             {data.startDate} – {data.endDate}
+            {fromCache && !refreshing && <span style={{ marginLeft: 8, opacity: 0.6 }}>· cached</span>}
           </div>
         </div>
         <button
