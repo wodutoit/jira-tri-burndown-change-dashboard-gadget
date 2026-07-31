@@ -76,6 +76,46 @@ modules:
       edit:
         resource: main
 
+    - key: sprint-tri-kanban-burnup-gadget
+      title: TRI Kanban Burnup
+      description: Cumulative burn-up for a Kanban iteration — Target,
+        Development, Review, and Testing story points added since the
+        iteration's start, read against a space's configured Capacity
+        iterations. Only spaces with Capacity Planning enabled (Kanban) can
+        be added.
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v3/static/gadgets/public/icons/tri-burndown.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
+    - key: sprint-tri-kanban-rework-gadget
+      title: TRI Kanban Rework
+      description: Kanban-iteration rework tracking — daily test-failure
+        kickback count chart or a table of individual rework events, scoped
+        to a space's configured Capacity iterations. Only spaces with
+        Capacity Planning enabled (Kanban) can be added.
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v3/static/gadgets/public/icons/tri-rework.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
+    - key: sprint-tri-kanban-cycle-time-gadget
+      title: TRI Kanban Cycle Time
+      description: Cycle time per item for a Kanban iteration — business
+        hours spent in In Progress, Blocked, Code Review and Test, with
+        estimate-vs-actual highlighting. Only spaces with Capacity Planning
+        enabled (Kanban) can be added.
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v3/static/gadgets/public/icons/tri-cycle-time.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
   jira:projectSettingsPage:
     - key: tri-space-capacity-settings-page
       title: Capacity Planning

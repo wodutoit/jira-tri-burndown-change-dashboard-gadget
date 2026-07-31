@@ -1,6 +1,6 @@
 # Using TRI Sprint Dashboard Gadgets
 
-Six Jira dashboard gadgets for sprint reporting, plus a project-level **Capacity** tab (see its own section below):
+Nine Jira dashboard gadgets for sprint/iteration reporting, plus a project-level **Capacity** tab (see its own section below):
 
 | Gadget | What it shows |
 | --- | --- |
@@ -10,8 +10,11 @@ Six Jira dashboard gadgets for sprint reporting, plus a project-level **Capacity
 | **TRI Cycle Time** | How many business hours each issue spent In Progress, Blocked, in Code Review, and in Test, compared against its story-point estimate |
 | **TRI Sprint Filter** | A space/sprint picker other TRI gadgets on the same dashboard can follow, so you only have to pick the sprint once |
 | **TRI Velocity** | Capacity/Committed/Velocity per closed sprint or completed iteration, from each space's Capacity data — one chart per space, with an optional combined Total across spaces |
+| **TRI Kanban Burnup** | A cumulative burn-up chart (Target/Development/Review/Testing) for a Kanban iteration |
+| **TRI Kanban Rework** | Same as TRI Rework, but for a Kanban iteration instead of a sprint |
+| **TRI Kanban Cycle Time** | Same as TRI Cycle Time, but for a Kanban iteration instead of a sprint |
 
-All four reporting gadgets together on one dashboard:
+All four Scrum reporting gadgets together on one dashboard:
 
 ![All four TRI gadgets on one dashboard](docs/screenshots/TRI-Full-Dashboard.png)
 
@@ -19,7 +22,7 @@ All four reporting gadgets together on one dashboard:
 
 1. Open the dashboard you want to add it to.
 2. Click **Add gadget** (usually in the top-right of the dashboard).
-3. Search for **TRI Burndown**, **TRI Scope Change**, **TRI Rework**, **TRI Cycle Time**, **TRI Sprint Filter**, or **TRI Velocity** and add it.
+3. Search for **TRI Burndown**, **TRI Scope Change**, **TRI Rework**, **TRI Cycle Time**, **TRI Sprint Filter**, **TRI Velocity**, **TRI Kanban Burnup**, **TRI Kanban Rework**, or **TRI Kanban Cycle Time** and add it.
 4. The gadget appears with a message asking you to configure it — click **Edit** on the gadget to open its settings.
 
 ## Configuring a gadget
@@ -112,6 +115,21 @@ Everything above is a dashboard gadget. **Capacity** is different: it's a tab th
 
 If you turn on **Allow multiple active iterations** (Kanban only), you can have more than one Active iteration at a time. Leave it off (the default) and trying to activate a second iteration while one is already Active shows an error telling you which one to change first — nothing gets changed automatically behind your back.
 
+## TRI Kanban Burnup, TRI Kanban Rework, and TRI Kanban Cycle Time
+
+These three are Kanban-only siblings of the Scrum gadgets above, reporting against a **Capacity iteration** (see the Capacity section above) instead of a Jira sprint — so a space needs **Capacity Planning enabled with a Kanban board** before any of them will have anything to point at.
+
+Their Edit screen follows a similar flow to "Configuring a gadget" above, with Iteration in place of Sprint:
+
+1. **Space** — only Capacity-enabled Kanban spaces are listed.
+2. **Iteration** — leave this on **"Active Iteration (auto)"** to always track whichever iteration is currently Active on that space's Capacity tab, or pick a specific one (including a completed iteration) for a historical view.
+3. **Story Points Field** and **4. Status → Phase Mapping** — same as the Scrum gadgets.
+
+There's no Commitment Grace Window setting and no "Use dashboard sprint filter" checkbox for these three — neither concept applies to a Kanban iteration.
+
+- **TRI Kanban Burnup** shows a cumulative burn-up: a dashed **Target** line ramping from 0 to the iteration's Committed SP (whatever that iteration's **Get SP Count** on the Capacity tab last calculated), plus **Development**, **Review**, and **Testing** lines showing story points that have reached that stage (or any later one) since the iteration began. It's chart-only — there's no table view.
+- **TRI Kanban Rework** and **TRI Kanban Cycle Time** work exactly like TRI Rework and TRI Cycle Time — same chart/table options, same columns — just reading the selected iteration's issues instead of a sprint's.
+
 ## Keeping data fresh
 
 Each gadget caches its sprint data briefly to load faster — active sprints refresh automatically every 5 minutes, and closed sprints are cached until you ask for fresh data. Every gadget has a small **Refresh** button (with a ⟳ icon) to force an immediate update.
@@ -125,6 +143,7 @@ Each gadget caches its sprint data briefly to load faster — active sprints ref
 - TRI Velocity reads whatever a space's Capacity tab has already calculated — it doesn't calculate anything itself. If a sprint or iteration's Committed/Velocity was never fetched there (no "Get SP Count"/"Get Velocity" click yet), TRI Velocity shows `0` for it rather than computing a number on its own.
 - Capacity has no control over exactly where its tab lands in a project's navigation — if you want it next to Reports specifically, drag it there yourself using Jira's own tab customization, the same way you'd move a Tempo or Time Tracker tab.
 - Kanban iterations are entirely defined inside this app — they don't show up anywhere else in Jira (no calendar entry, no board marker). Deleting an iteration only removes it from this table; it never touches the underlying issues.
+- TRI Kanban Burnup's Target line is only as good as that iteration's Committed value on the Capacity tab — if **Get SP Count** has never been run for it, Target just ramps from 0 to 0.
 
 ## Getting help
 

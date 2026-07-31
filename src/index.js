@@ -1151,7 +1151,8 @@ resolver.define('setCapacityPlanningEnabled', async ({ payload }) => {
 // — the same "up to 100 projects, one page" cap as getGadgetProjects, plus one
 // extra property-check request per project. Bounded and one-off (Edit mode
 // only), not a hot path.
-resolver.define('getCapacityEnabledProjects', async () => {
+resolver.define('getCapacityEnabledProjects', async ({ payload }) => {
+  const { boardTypeFilter } = payload ?? {};
   try {
     const res = await asUser().requestJira(
       route`/rest/api/3/project/search?maxResults=100&orderBy=name`,
@@ -1175,7 +1176,25 @@ resolver.define('getCapacityEnabledProjects', async () => {
       }
     }));
 
-    return { projects: all.filter((_, i) => flags[i]) };
+    let enabled = all.filter((_, i) => flags[i]);
+
+    // Only fetched when a caller actually needs it (e.g. the Kanban-only
+    // gadgets' space pickers) — one extra board lookup per Capacity-enabled
+    // project, same bounded/Edit-mode-only cost class as the property check above.
+    if (boardTypeFilter) {
+      const boardTypes = await Promise.all(enabled.map(async p => {
+        try {
+          const { board, error } = await getBoardForProject(p.key);
+          if (error) return null;
+          return await resolveBoardType(board);
+        } catch (_) {
+          return null;
+        }
+      }));
+      enabled = enabled.filter((_, i) => boardTypes[i] === boardTypeFilter);
+    }
+
+    return { projects: enabled };
   } catch (e) {
     return { projects: [], error: e.message };
   }
@@ -1914,6 +1933,303 @@ resolver.define('setIterationCapacity', async ({ payload }) => {
   } catch (e) {
     return { error: e.message };
   }
+});
+
+// ── TRI-Kanban-Burnup / TRI-Kanban-Rework / TRI-Kanban-Cycle-Time ─────────────
+// Three sibling gadgets to TRI Burndown/Rework/Cycle Time, scoped to a Kanban
+// iteration instead of a Scrum sprint. They reuse the exact same per-project
+// status→phase mapping (DEFAULT_PHASE_MAP/PHASE_OPTIONS on the frontend) as
+// the Scrum gadgets — Capacity's own Kanban math deliberately does NOT use
+// this mapping (see the comment above CAPACITY_SETTINGS_DEFAULTS), but these
+// three gadgets are direct siblings of the Scrum reporting gadgets, not of
+// Capacity, so they inherit that mapping instead.
+
+// Mirrors resolveSprint — 'active' mode does a fresh lookup every call (errors
+// if zero or more than one iteration is Active, since "Active" only means
+// something unambiguous when there's exactly one — same invariant
+// checkSingleActiveIteration already enforces on write); 'fixed' pins to a
+// specific iteration id.
+async function resolveIteration({ projectKey, iterationMode, iterationId }) {
+  const iterations = await getIterations(projectKey);
+  if (iterationMode === 'active') {
+    const actives = iterations.filter(it => it.status === 'active');
+    if (!actives.length) return { error: 'No active iteration currently running for this space.' };
+    if (actives.length > 1) return { error: 'Multiple active iterations found — pick a specific iteration instead of "Active".' };
+    return { iteration: actives[0] };
+  }
+  const iteration = iterations.find(it => it.id === iterationId);
+  if (!iteration) return { error: 'Iteration not found.' };
+  return { iteration };
+}
+
+// computeReworkData/computeCycleTimeData only ever read .startDate, .name,
+// .state, and actualSprintEnd()'s .completeDate/.endDate — a Kanban iteration
+// satisfies that shape directly, so this shim lets both run completely unchanged.
+function iterationAsSprintShim(iteration) {
+  return {
+    name: iteration.name,
+    state: iteration.status,
+    startDate: iteration.startDate,
+    endDate: iteration.endDate,
+    completeDate: iteration.status === 'completed' ? iteration.endDate : null,
+  };
+}
+
+function isTrackedPhase(phase) {
+  return !!phase && phase !== 'backlog' && phase !== 'excluded';
+}
+
+// True if the issue was in a tracked phase at windowStart, or transitioned
+// into a tracked-or-done phase at any point during (windowStart, windowEnd].
+// Phase-based port of the reference script's _is_active_during_period
+// (jira_kanban_burnup_extract.py) — "tracked" here means "not backlog, not
+// excluded" rather than that script's hardcoded per-team status set.
+function isActiveDuringWindow(issue, statusMapping, windowStartMs, windowEndMs) {
+  const phaseAtStart = statusMapping[statusAt(issue.transitions, windowStartMs, issue.currentStatus)];
+  if (isTrackedPhase(phaseAtStart)) return true;
+  for (const t of issue.transitions) {
+    const ts = Date.parse(t.ts);
+    if (ts > windowStartMs && ts <= windowEndMs) {
+      const phase = statusMapping[t.to];
+      if (isTrackedPhase(phase) || phase === 'done') return true;
+    }
+  }
+  return false;
+}
+
+// Raw fetch only, shared by all three Kanban reporting gadgets so an
+// iteration's issue set is fetched/cached once regardless of how many of them
+// are on a dashboard. Merges two JQL queries the same way
+// getIterationCommittedRawData does (touched-during-window, plus
+// currently-in-a-tracked-status for long-running tickets with no recent
+// field update) and caches the UNFILTERED union. Classification
+// (isActiveDuringWindow) deliberately isn't baked into the cache — it depends
+// on the caller's own statusMapping, which can differ between gadget
+// instances pointed at the same iteration, so it's applied fresh on every
+// call instead (see filterActiveDuringWindow). The `status IN (tracked)`
+// discovery query is still built from the caller's statusMapping purely to
+// widen the candidate set, so two differently-configured gadgets sharing this
+// cache within the 5-minute TTL could in theory see a slightly different
+// candidate superset — same accepted, bounded tradeoff as
+// getIterationCommittedRawData's WAS/DURING window.
+async function getIterationActiveRawData(projectKey, iterationId, spFieldId, startDate, endDate, statusMapping, forceRefresh) {
+  const cacheKey = `raw-kanban-active:${projectKey}:${iterationId}:${spFieldId}`;
+  if (!forceRefresh) {
+    try {
+      const cached = await kvs.get(cacheKey);
+      if (cached && (Date.now() - cached.cachedAt) <= ACTIVE_CACHE_TTL_MS) {
+        return { issueData: cached.issueData };
+      }
+    } catch (_) {}
+  }
+
+  const windowStartMs = Date.parse(startDate + 'T00:00:00.000Z');
+  const windowEndMs = Date.parse(endDate + 'T23:59:59.999Z');
+  const paddedStart = jqlDateOnly(windowStartMs - 2 * 86400000);
+  const paddedEnd = jqlDateOnly(windowEndMs + 2 * 86400000);
+
+  const trackedStatuses = Object.entries(statusMapping)
+    .filter(([, phase]) => isTrackedPhase(phase))
+    .map(([name]) => name);
+
+  const queries = [`project = "${projectKey}" AND updated >= "${paddedStart}" AND updated <= "${paddedEnd}"`];
+  if (trackedStatuses.length) {
+    queries.push(`project = "${projectKey}" AND status IN (${jqlQuoteList(trackedStatuses)})`);
+  }
+
+  const byKey = new Map();
+  for (const jql of queries) {
+    for (const issue of await fetchIterationIssues(jql, spFieldId)) byKey.set(issue.key, issue);
+  }
+
+  const issueData = await extractIterationIssueData([...byKey.values()], spFieldId);
+  try { await kvs.set(cacheKey, { issueData, cachedAt: Date.now() }); } catch (_) {}
+  return { issueData };
+}
+
+function filterActiveDuringWindow(issueData, statusMapping, startDate, endDate) {
+  const windowStartMs = Date.parse(startDate + 'T00:00:00.000Z');
+  const windowEndMs = Date.parse(endDate + 'T23:59:59.999Z');
+  const filtered = {};
+  for (const [key, issue] of Object.entries(issueData)) {
+    if (isActiveDuringWindow(issue, statusMapping, windowStartMs, windowEndMs)) filtered[key] = issue;
+  }
+  return filtered;
+}
+
+resolver.define('getKanbanReworkData', async ({ payload }) => {
+  const { projectKey, iterationMode, iterationId, spFieldId, statusMapping, forceRefresh } = payload ?? {};
+  if (!projectKey || !spFieldId || !statusMapping || (iterationMode !== 'active' && !iterationId)) {
+    return { error: 'Missing required config.' };
+  }
+
+  const resolved = await resolveIteration({ projectKey, iterationMode, iterationId });
+  if (resolved.error) return { error: resolved.error };
+  const iteration = resolved.iteration;
+
+  let issueData;
+  try {
+    ({ issueData } = await getIterationActiveRawData(
+      projectKey, iteration.id, spFieldId, iteration.startDate, iteration.endDate, statusMapping, forceRefresh
+    ));
+  } catch (e) {
+    return { error: e.message };
+  }
+  issueData = filterActiveDuringWindow(issueData, statusMapping, iteration.startDate, iteration.endDate);
+
+  const data = computeReworkData(iterationAsSprintShim(iteration), issueData, statusMapping);
+  if (!data) return { error: 'Could not compute rework events — check iteration dates.' };
+  data.spaceName = await getSpaceName(projectKey);
+
+  return { data };
+});
+
+resolver.define('getKanbanCycleTimeData', async ({ payload }) => {
+  const {
+    projectKey, iterationMode, iterationId, spFieldId, statusMapping, forceRefresh,
+    hoursPerSp, workStartHour, workEndHour, utcOffsetHours,
+  } = payload ?? {};
+  if (!projectKey || !spFieldId || !statusMapping || (iterationMode !== 'active' && !iterationId)) {
+    return { error: 'Missing required config.' };
+  }
+
+  const resolved = await resolveIteration({ projectKey, iterationMode, iterationId });
+  if (resolved.error) return { error: resolved.error };
+  const iteration = resolved.iteration;
+
+  let issueData;
+  try {
+    ({ issueData } = await getIterationActiveRawData(
+      projectKey, iteration.id, spFieldId, iteration.startDate, iteration.endDate, statusMapping, forceRefresh
+    ));
+  } catch (e) {
+    return { error: e.message };
+  }
+  issueData = filterActiveDuringWindow(issueData, statusMapping, iteration.startDate, iteration.endDate);
+
+  const numOr = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+  const data = computeCycleTimeData(iterationAsSprintShim(iteration), issueData, statusMapping, {
+    hoursPerSp:     numOr(hoursPerSp, 4) || 4,
+    workStartHour:  numOr(workStartHour, 9),
+    workEndHour:    numOr(workEndHour, 17),
+    utcOffsetHours: numOr(utcOffsetHours, 10),
+  });
+  data.spaceName = await getSpaceName(projectKey);
+
+  return { data };
+});
+
+// Cumulative burn-up for a Kanban iteration — restates the reference script's
+// compute_burnup_series() (jira_kanban_burnup_extract.py) against this app's
+// own phase vocabulary instead of a hardcoded per-team status set. Every line
+// is CUMULATIVE: an item counts toward a line from the day it first reaches
+// that phase OR ANY LATER phase and stays counted thereafter, delta'd against
+// day 0 so every line starts at 0 ("SP added since period start"), same
+// convention as the reference script. The script's "All Work" funnel line is
+// computed there but never actually charted (its own dashboard only plots
+// Target/Development/Review/Testing), so it's dropped here rather than
+// carried as dead data. Target's endpoint is the iteration's own Committed SP
+// (already computed by the Capacity tab's "Get SP Count"), not a
+// separately-entered "planned SP" — one source of truth, same principle as
+// TRI Velocity reading Capacity's saved numbers instead of computing its own.
+function computeIterationBurnup(iteration, issueData, statusMapping, committedSp, clientTodayISO) {
+  const startDate = iteration.startDate;
+  // Resolvers run server-side in UTC, so new Date() here can lag a calendar
+  // day behind for sites east of UTC — same fix as computeBurndown's
+  // clientTodayISO param: prefer the browser's own local date when supplied.
+  const todayISO = clientTodayISO || new Date().toISOString().slice(0, 10);
+  const effectiveEnd = todayISO < iteration.endDate ? todayISO : iteration.endDate;
+  const bizDays = getBusinessDays(startDate, iteration.endDate);
+  if (!bizDays.length) return null;
+
+  const n = bizDays.length;
+  const labels = bizDays.map(dayLabel);
+  const target = bizDays.map((_, i) => (n > 1 ? Math.round(committedSp * i / (n - 1) * 10) / 10 : committedSp));
+
+  const devPlus    = new Set(['dev', 'review', 'test', 'done']);
+  const reviewPlus = new Set(['review', 'test', 'done']);
+  const testPlus   = new Set(['test', 'done']);
+
+  const development = [];
+  const review = [];
+  const testing = [];
+
+  for (const day of bizDays) {
+    if (day > effectiveEnd) {
+      development.push(null);
+      review.push(null);
+      testing.push(null);
+      continue;
+    }
+    const eodMs = Date.parse(day + 'T23:59:59.999Z');
+    let devSp = 0, reviewSp = 0, testSp = 0;
+    for (const issue of Object.values(issueData)) {
+      const sp = issue.sp || 0;
+      if (!sp) continue;
+      const phase = statusMapping[statusAt(issue.transitions, eodMs, issue.currentStatus)];
+      if (devPlus.has(phase))    devSp    += sp;
+      if (reviewPlus.has(phase)) reviewSp += sp;
+      if (testPlus.has(phase))   testSp   += sp;
+    }
+    development.push(devSp);
+    review.push(reviewSp);
+    testing.push(testSp);
+  }
+
+  // Delta from day-0 baseline so every line starts at 0.
+  const baseline = arr => (arr.length && arr[0] != null ? arr[0] : 0);
+  const toDelta = (arr, b) => arr.map(v => (v == null ? null : Math.round((v - b) * 10) / 10));
+  const developmentDelta = toDelta(development, baseline(development));
+  const reviewDelta      = toDelta(review, baseline(review));
+  const testingDelta     = toDelta(testing, baseline(testing));
+
+  const lastNonNull = arr => {
+    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) return arr[i];
+    return 0;
+  };
+
+  return {
+    labels,
+    target,
+    development: developmentDelta,
+    review: reviewDelta,
+    testing: testingDelta,
+    committedSp,
+    lastDevelopment: lastNonNull(developmentDelta),
+    lastReview: lastNonNull(reviewDelta),
+    lastTesting: lastNonNull(testingDelta),
+    iterationName: iteration.name,
+    iterationStatus: iteration.status,
+    startDate,
+    endDate: iteration.endDate,
+  };
+}
+
+resolver.define('getKanbanBurnupData', async ({ payload }) => {
+  const { projectKey, iterationMode, iterationId, spFieldId, statusMapping, forceRefresh, todayISO } = payload ?? {};
+  if (!projectKey || !spFieldId || !statusMapping || (iterationMode !== 'active' && !iterationId)) {
+    return { error: 'Missing required config.' };
+  }
+
+  const resolved = await resolveIteration({ projectKey, iterationMode, iterationId });
+  if (resolved.error) return { error: resolved.error };
+  const iteration = resolved.iteration;
+
+  let issueData;
+  try {
+    ({ issueData } = await getIterationActiveRawData(
+      projectKey, iteration.id, spFieldId, iteration.startDate, iteration.endDate, statusMapping, forceRefresh
+    ));
+  } catch (e) {
+    return { error: e.message };
+  }
+  issueData = filterActiveDuringWindow(issueData, statusMapping, iteration.startDate, iteration.endDate);
+
+  const data = computeIterationBurnup(iteration, issueData, statusMapping, iteration.committedSp || 0, todayISO);
+  if (!data) return { error: 'Could not compute burn-up — check iteration dates.' };
+  data.spaceName = await getSpaceName(projectKey);
+
+  return { data };
 });
 
 exports.handler = resolver.getDefinitions();

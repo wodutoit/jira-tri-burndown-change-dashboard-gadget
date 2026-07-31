@@ -2,7 +2,7 @@
 
 **Effective date:** 20 July 2026
 
-This policy describes what data the TRI Sprint Dashboard Gadgets app (TRI Burndown, TRI Scope Change, TRI Rework, TRI Cycle Time, TRI Sprint Filter, TRI Velocity, and the Capacity project tab) accesses and stores when installed on your Jira Cloud site.
+This policy describes what data the TRI Sprint Dashboard Gadgets app (TRI Burndown, TRI Scope Change, TRI Rework, TRI Cycle Time, TRI Sprint Filter, TRI Velocity, TRI Kanban Burnup, TRI Kanban Rework, TRI Kanban Cycle Time, and the Capacity project tab) accesses and stores when installed on your Jira Cloud site.
 
 ## What the app accesses
 
@@ -30,6 +30,8 @@ TRI Velocity's configuration can list more than one space, but it no longer fetc
 The Capacity project tab's on/off setting is stored as a Jira **project property** (`tri-capacity-planning`, a simple `true`/`false` flag) rather than in Forge Storage — this is a Jira platform mechanism, not something the app hosts, and it holds no data beyond that one flag per project. Its other settings (Base Capacity, default iteration length, story-points field, grace window) are ordinary Forge Storage, same as everything else in this section.
 
 For **Kanban** projects, the Capacity page's "iterations" have no Jira equivalent at all, so their full content — name, description, capacity, start/end dates, status, an optional label filter, and the computed Committed/Velocity numbers — is stored entirely in Forge Storage, scoped per project. This is new in the sense that iteration names/descriptions are free text you type into this app (not sourced from Jira), but it's the same storage mechanism and hosting (Atlassian's Forge Storage) as everything else described here.
+
+TRI Kanban Burnup, TRI Kanban Rework, and TRI Kanban Cycle Time cache the same kind of trimmed issue data described above (issue keys, titles, story points, status-change timestamps, labels), just keyed by Kanban iteration instead of by sprint — no new category of data, and their Edit screens only offer spaces that already have Capacity Planning turned on with a Kanban board.
 
 ## What the app does not do
 

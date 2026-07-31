@@ -16,6 +16,12 @@ import TriVelocityGadgetView from './gadget/TriVelocityGadgetView';
 import TriVelocityGadgetEdit from './gadget/TriVelocityGadgetEdit';
 import TriCapacitySettingsPage from './gadget/TriCapacitySettingsPage';
 import TriCapacityPage from './gadget/TriCapacityPage';
+import TriKanbanBurnupGadgetView from './gadget/TriKanbanBurnupGadgetView';
+import TriKanbanBurnupGadgetEdit from './gadget/TriKanbanBurnupGadgetEdit';
+import TriKanbanReworkGadgetView from './gadget/TriKanbanReworkGadgetView';
+import TriKanbanReworkGadgetEdit from './gadget/TriKanbanReworkGadgetEdit';
+import TriKanbanCycleTimeGadgetView from './gadget/TriKanbanCycleTimeGadgetView';
+import TriKanbanCycleTimeGadgetEdit from './gadget/TriKanbanCycleTimeGadgetEdit';
 
 const GADGETS = {
   'sprint-tri-burndown-gadget': { view: TriBurndownGadgetView, edit: TriBurndownGadgetEdit },
@@ -24,6 +30,9 @@ const GADGETS = {
   'sprint-tri-cycle-time-gadget': { view: TriCycleTimeGadgetView, edit: TriCycleTimeGadgetEdit },
   'sprint-tri-filter-gadget': { view: TriSprintFilterGadgetView, edit: TriSprintFilterGadgetEdit },
   'sprint-tri-velocity-gadget': { view: TriVelocityGadgetView, edit: TriVelocityGadgetEdit },
+  'sprint-tri-kanban-burnup-gadget': { view: TriKanbanBurnupGadgetView, edit: TriKanbanBurnupGadgetEdit },
+  'sprint-tri-kanban-rework-gadget': { view: TriKanbanReworkGadgetView, edit: TriKanbanReworkGadgetEdit },
+  'sprint-tri-kanban-cycle-time-gadget': { view: TriKanbanCycleTimeGadgetView, edit: TriKanbanCycleTimeGadgetEdit },
   'tri-space-capacity-settings-page': { view: TriCapacitySettingsPage },
   'tri-space-capacity-page': { view: TriCapacityPage },
 };

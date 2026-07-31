@@ -1,7 +1,7 @@
 {
   "name": "tri-burndown-gadget",
-  "version": "1.4.0",
-  "description": "Atlassian Forge - Jira dashboard gadgets for sprint burndown, scope change, rework, cycle time, velocity, and a shared sprint filter",
+  "version": "1.5.0",
+  "description": "Atlassian Forge - Jira dashboard gadgets for sprint burndown, scope change, rework, cycle time, velocity, Kanban burn-up/rework/cycle time, and a shared sprint filter",
   "main": "src/index.js",
   "license": "MIT",
   "scripts": {
