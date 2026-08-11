@@ -1679,7 +1679,7 @@ async function fetchIterationIssues(jql, spFieldId) {
   let nextPageToken;
 
   while (true) {
-    const reqBody = { jql, fields, expand: 'changelog', maxResults: 50 };
+    const reqBody = { jql, fields, expand: 'changelog', maxResults: 100 };
     if (nextPageToken) reqBody.nextPageToken = nextPageToken;
 
     const searchRes = await asUser().requestJira(
@@ -1979,14 +1979,27 @@ function isTrackedPhase(phase) {
   return !!phase && phase !== 'backlog' && phase !== 'excluded';
 }
 
-// True if the issue was in a tracked phase at windowStart, or transitioned
+// Genuinely mid-flight phases — unlike isTrackedPhase, this excludes 'done'.
+// Used wherever "was this issue actually in progress" matters, as opposed to
+// "did this issue reach a meaningful (non-backlog) phase at all".
+function isWipPhase(phase) {
+  return phase === 'dev' || phase === 'blocked' || phase === 'review' || phase === 'test';
+}
+
+// True if the issue was already mid-flight at windowStart, or transitioned
 // into a tracked-or-done phase at any point during (windowStart, windowEnd].
 // Phase-based port of the reference script's _is_active_during_period
-// (jira_kanban_burnup_extract.py) — "tracked" here means "not backlog, not
-// excluded" rather than that script's hardcoded per-team status set.
+// (jira_kanban_burnup_extract.py) — the per-team hardcoded status sets there
+// become statusMapping lookups here. The windowStart check deliberately uses
+// isWipPhase, not isTrackedPhase: an issue already Done before the window
+// even began isn't "active during the window" just because it got touched
+// (a comment, a label) sometime inside it — only a real in-flight phase at
+// windowStart, or an actual transition during the window (checked below,
+// where reaching 'done' during the window is still correctly counted), makes
+// it active.
 function isActiveDuringWindow(issue, statusMapping, windowStartMs, windowEndMs) {
   const phaseAtStart = statusMapping[statusAt(issue.transitions, windowStartMs, issue.currentStatus)];
-  if (isTrackedPhase(phaseAtStart)) return true;
+  if (isWipPhase(phaseAtStart)) return true;
   for (const t of issue.transitions) {
     const ts = Date.parse(t.ts);
     if (ts > windowStartMs && ts <= windowEndMs) {
@@ -1999,19 +2012,34 @@ function isActiveDuringWindow(issue, statusMapping, windowStartMs, windowEndMs) 
 
 // Raw fetch only, shared by all three Kanban reporting gadgets so an
 // iteration's issue set is fetched/cached once regardless of how many of them
-// are on a dashboard. Merges two JQL queries the same way
-// getIterationCommittedRawData does (touched-during-window, plus
-// currently-in-a-tracked-status for long-running tickets with no recent
-// field update) and caches the UNFILTERED union. Classification
-// (isActiveDuringWindow) deliberately isn't baked into the cache — it depends
-// on the caller's own statusMapping, which can differ between gadget
-// instances pointed at the same iteration, so it's applied fresh on every
-// call instead (see filterActiveDuringWindow). The `status IN (tracked)`
-// discovery query is still built from the caller's statusMapping purely to
-// widen the candidate set, so two differently-configured gadgets sharing this
-// cache within the 5-minute TTL could in theory see a slightly different
-// candidate superset — same accepted, bounded tradeoff as
-// getIterationCommittedRawData's WAS/DURING window.
+// are on a dashboard. Merges three JQL queries and caches the UNFILTERED
+// union. Classification (isActiveDuringWindow) deliberately isn't baked into
+// the cache — it depends on the caller's own statusMapping, which can differ
+// between gadget instances pointed at the same iteration, so it's applied
+// fresh on every call instead (see filterActiveDuringWindow). All three
+// discovery queries are built from the caller's statusMapping purely to widen
+// the candidate set, so two differently-configured gadgets sharing this cache
+// within the 5-minute TTL could in theory see a slightly different candidate
+// superset — same accepted, bounded tradeoff as getIterationCommittedRawData's
+// WAS/DURING window.
+//
+// Query A — touched during the window, excluding backlog statuses (an issue
+// merely groomed/commented-on while still To Do/BA Reviewed isn't iteration
+// work; if a caller's mapping has no backlog statuses this degrades to the
+// original unfiltered clause).
+// Query B — currently mid-flight (dev/blocked/review/test, NOT done) for
+// long-running issues with no recent field update, bounded by `created` so a
+// brand-new in-progress ticket can't leak into a much older iteration's
+// report. Excluding `done` here is the actual fix for a real timeout: this
+// used to also match every status mapped to 'done', with no time bound at
+// all, which on any project with real history fetched (with full changelog
+// expand) literally every issue ever closed.
+// Query C — reached a done-phase status DURING the window specifically. This
+// is what still lets an issue that finished mid-iteration into the result set
+// without Query B's unbounded scan — same WAS-IN/DURING performance pattern
+// already used by getIterationCommittedRawData (src/index.js above), just
+// with CHANGED TO since here it's a single from-anywhere transition rather
+// than "was in one of these statuses at some point."
 async function getIterationActiveRawData(projectKey, iterationId, spFieldId, startDate, endDate, statusMapping, forceRefresh) {
   const cacheKey = `raw-kanban-active:${projectKey}:${iterationId}:${spFieldId}`;
   if (!forceRefresh) {
@@ -2028,18 +2056,29 @@ async function getIterationActiveRawData(projectKey, iterationId, spFieldId, sta
   const paddedStart = jqlDateOnly(windowStartMs - 2 * 86400000);
   const paddedEnd = jqlDateOnly(windowEndMs + 2 * 86400000);
 
-  const trackedStatuses = Object.entries(statusMapping)
-    .filter(([, phase]) => isTrackedPhase(phase))
+  const statusesForPhase = (pred) => Object.entries(statusMapping)
+    .filter(([, phase]) => pred(phase))
     .map(([name]) => name);
 
-  const queries = [`project = "${projectKey}" AND updated >= "${paddedStart}" AND updated <= "${paddedEnd}"`];
-  if (trackedStatuses.length) {
-    queries.push(`project = "${projectKey}" AND status IN (${jqlQuoteList(trackedStatuses)})`);
+  const backlogStatuses = statusesForPhase(phase => phase === 'backlog');
+  const wipStatuses = statusesForPhase(isWipPhase);
+  const doneStatuses = statusesForPhase(phase => phase === 'done');
+
+  const queries = [
+    `project = "${projectKey}" AND updated >= "${paddedStart}" AND updated <= "${paddedEnd}"`
+      + (backlogStatuses.length ? ` AND status NOT IN (${jqlQuoteList(backlogStatuses)})` : ''),
+  ];
+  if (wipStatuses.length) {
+    queries.push(`project = "${projectKey}" AND status IN (${jqlQuoteList(wipStatuses)}) AND created <= "${paddedEnd}"`);
+  }
+  if (doneStatuses.length) {
+    queries.push(`project = "${projectKey}" AND status CHANGED TO (${jqlQuoteList(doneStatuses)}) DURING ("${paddedStart}", "${paddedEnd}")`);
   }
 
   const byKey = new Map();
-  for (const jql of queries) {
-    for (const issue of await fetchIterationIssues(jql, spFieldId)) byKey.set(issue.key, issue);
+  const results = await Promise.all(queries.map(jql => fetchIterationIssues(jql, spFieldId)));
+  for (const issues of results) {
+    for (const issue of issues) byKey.set(issue.key, issue);
   }
 
   const issueData = await extractIterationIssueData([...byKey.values()], spFieldId);
