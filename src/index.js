@@ -1011,36 +1011,27 @@ async function fetchClosedSprintsForBoard(projectKey, limit) {
   return { sprints };
 }
 
-// Committed = the same grace-window "initial scope" TRI Burndown uses as its
-// day-1 height. Completed = SP still in the sprint (not removed/excluded) in
-// a "done"-mapped status by the sprint's actual close.
-function computeVelocity(sprint, issueData, statusMapping, graceWindowHours = 12) {
-  const startDate = sprint.startDate?.slice(0, 10);
-  const endDate   = actualSprintEnd(sprint)?.slice(0, 10);
-  if (!startDate || !endDate) return null;
-
-  const bizDays = getBusinessDays(startDate, endDate);
-  if (!bizDays.length) return null;
-
-  const { initialScope, removedTsByKey, nrTsByKey } =
-    computeScopeFoundation(sprint, issueData, statusMapping, bizDays, graceWindowHours);
-
-  const eodMs = Date.parse(bizDays[bizDays.length - 1] + 'T23:59:59.999Z');
+// Velocity = SP of every issue currently in a "done"-mapped status — no time
+// range, no grace window, no removed/excluded tracking. Just "what's Done
+// right now", matching a plain `sprint = X AND status in (Done)` JQL query.
+// Deliberately NOT the same "did it reach Done by end of sprint" history walk
+// computeBurndown/computeScopeFoundation use — velocity is a point-in-time
+// snapshot read whenever "Get Velocity" is clicked, not a chart that needs to
+// reconstruct a specific past instant. `excludedStatuses` (a Set of status
+// names) exists because Jira's status category conflates "genuinely finished"
+// and "cancelled/not needed" into the same 'Done' bucket — a status like
+// "Not Required" reports categoryKey 'done' with no other reliable signal
+// (resolution can be null) to tell it apart, so this has to be an explicit
+// per-project opt-out, same reasoning as Kanban's Committed-status whitelist.
+function computeVelocity(issueData, statusMapping, excludedStatuses) {
   let completed = 0;
-  for (const [key, issue] of Object.entries(issueData)) {
+  for (const issue of Object.values(issueData)) {
     const sp = issue.sp || 0;
     if (!sp) continue;
-    if (nrTsByKey[key]      && Date.parse(nrTsByKey[key])      <= eodMs) continue;
-    if (removedTsByKey[key] && Date.parse(removedTsByKey[key]) <= eodMs) continue;
-    const doneTrans = issue.transitions.find(t => statusMapping[t.to] === 'done');
-    if (doneTrans && Date.parse(doneTrans.ts) <= eodMs) completed += sp;
+    if (excludedStatuses?.has(issue.currentStatus)) continue;
+    if (statusMapping[issue.currentStatus] === 'done') completed += sp;
   }
-
-  return {
-    committed: Math.round(initialScope * 10) / 10,
-    completed: Math.round(completed * 10) / 10,
-    endDate,
-  };
+  return Math.round(completed * 10) / 10;
 }
 
 // Matches the closed-sprint cap used elsewhere (getSprintsForProject) — the
@@ -1223,6 +1214,7 @@ const CAPACITY_SETTINGS_DEFAULTS = {
   boardTypeOverride: 'auto',
   kanbanCommittedStatuses: [],
   kanbanCommittedUsesLabelFilter: false,
+  excludedDoneStatuses: [],
 };
 const CAPACITY_BOARD_TYPE_OVERRIDE_OPTIONS = ['auto', 'scrum', 'kanban'];
 
@@ -1258,6 +1250,9 @@ resolver.define('setCapacitySettings', async ({ payload }) => {
       ? settings.kanbanCommittedStatuses.filter(s => typeof s === 'string' && s)
       : [],
     kanbanCommittedUsesLabelFilter: !!settings.kanbanCommittedUsesLabelFilter,
+    excludedDoneStatuses: Array.isArray(settings.excludedDoneStatuses)
+      ? settings.excludedDoneStatuses.filter(s => typeof s === 'string' && s)
+      : [],
   };
   try {
     await kvs.set(`capacity-settings:${projectKey}`, merged);
@@ -1474,7 +1469,7 @@ resolver.define('setSprintCommittedSp', async ({ payload }) => {
 });
 
 resolver.define('getSprintVelocitySp', async ({ payload }) => {
-  const { projectKey, sprintId, spFieldId, graceWindowHours } = payload ?? {};
+  const { projectKey, sprintId, spFieldId } = payload ?? {};
   if (!projectKey || !sprintId || !spFieldId) return { error: 'Missing config.' };
   try {
     const sprintRes = await asUser().requestJira(
@@ -1485,11 +1480,15 @@ resolver.define('getSprintVelocitySp', async ({ payload }) => {
     const sprint = await sprintRes.json();
     if (sprint.state === 'future') return { velocitySp: 0 };
 
-    const { issueData } = await getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh: sprint.state === 'active' });
+    // Always a fresh fetch — this is an explicit "Get Velocity" click, not a
+    // page load, and velocity is a point-in-time snapshot: serving a stale
+    // cached issue set (e.g. from before a batch of tickets moved to Done
+    // just before the sprint closed) would silently under-report it.
+    const { issueData } = await getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh: true });
     const { statusMapping, error: mapErr } = await getCapacityStatusMapping(projectKey);
     if (mapErr) return { error: mapErr };
-    const v = computeVelocity(sprint, issueData, statusMapping, Number(graceWindowHours) || 12);
-    const velocitySp = v ? v.completed : 0;
+    const settings = await getCapacitySettingsFor(projectKey);
+    const velocitySp = computeVelocity(issueData, statusMapping, new Set(settings.excludedDoneStatuses));
     await updateCapacityRow(projectKey, sprintId, { velocitySp, velocityAt: new Date().toISOString() });
     return { velocitySp };
   } catch (e) {
@@ -1809,13 +1808,18 @@ function computeIterationCommitted(issueData, committedStatusNames, cutoffMs, la
   return Math.round(committed * 10) / 10;
 }
 
-function computeIterationVelocity(issueData, categoryMap, startMs, endMs, labelFilter) {
+// excludedStatuses: same per-project "exclude these Done-category statuses"
+// list Scrum's computeVelocity uses (e.g. "Not Required") — a status Jira
+// categorizes Done but that isn't genuinely completed work. Skipped when
+// looking for the first real Done transition, not just at the current
+// status, since velocity here is keyed off when an issue *became* Done.
+function computeIterationVelocity(issueData, categoryMap, startMs, endMs, labelFilter, excludedStatuses) {
   let velocity = 0;
   for (const issue of Object.values(issueData)) {
     const sp = issue.sp || 0;
     if (!sp) continue;
     if (labelFilter && !(issue.labels || []).includes(labelFilter)) continue;
-    const doneTrans = issue.transitions.find(t => categoryMap[t.to] === 'done');
+    const doneTrans = issue.transitions.find(t => categoryMap[t.to] === 'done' && !excludedStatuses?.has(t.to));
     if (!doneTrans) continue;
     const ts = Date.parse(doneTrans.ts);
     if (ts >= startMs && ts <= endMs) velocity += sp;
@@ -1892,7 +1896,10 @@ resolver.define('getIterationVelocitySp', async ({ payload }) => {
 
     const startMs = Date.parse(iteration.startDate + 'T00:00:00.000Z');
     const endMs = Date.parse(iteration.endDate + 'T23:59:59.999Z');
-    const velocitySp = computeIterationVelocity(issueData, categoryMap, startMs, endMs, iteration.labelFilter);
+    const settings = await getCapacitySettingsFor(projectKey);
+    const velocitySp = computeIterationVelocity(
+      issueData, categoryMap, startMs, endMs, iteration.labelFilter, new Set(settings.excludedDoneStatuses)
+    );
 
     const next = iterations.map(it => it.id === iterationId
       ? { ...it, velocitySp, velocityAt: new Date().toISOString() } : it);

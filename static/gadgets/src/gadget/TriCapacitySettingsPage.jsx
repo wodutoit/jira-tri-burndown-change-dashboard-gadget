@@ -102,6 +102,13 @@ export default function TriCapacitySettingsPage() {
     saveSettings({ kanbanCommittedStatuses: [...next] });
   };
 
+  const excludedDoneSet = new Set(settings.excludedDoneStatuses || []);
+  const toggleExcludedDoneStatus = (name) => {
+    const next = new Set(excludedDoneSet);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    saveSettings({ excludedDoneStatuses: [...next] });
+  };
+
   return (
     <div style={S.wrap}>
       {error && <div style={S.error}>{error}</div>}
@@ -190,6 +197,37 @@ export default function TriCapacitySettingsPage() {
         <div style={S.hint}>
           Same meaning as the other TRI-* gadgets' Grace Window: work already in progress within this many hours of
           a sprint/iteration's start still counts as "committed" rather than mid-sprint scope creep.
+        </div>
+      </Section>
+
+      <div style={S.divider} />
+
+      <Section title="Excluded Done Statuses">
+        {statuses.length === 0 ? (
+          <div style={S.hint}>No statuses found for this project.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            {statuses.filter(s => s.categoryKey === 'done').map(s => {
+              const colors = statusStyle(s.categoryKey);
+              return (
+                <label key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={excludedDoneSet.has(s.name)}
+                    onChange={() => toggleExcludedDoneStatus(s.name)}
+                  />
+                  <span>{s.name}</span>
+                  <span style={{ ...S.chip, background: colors.bg, color: colors.text }}>{s.categoryKey}</span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <div style={S.hint}>
+          Jira's own status category can't tell "genuinely completed" apart from "cancelled" or "not needed" — both
+          often land in the Done category (e.g. a "Not Required" status). Check any Done-category status here that
+          shouldn't count toward Velocity. Applies to both Scrum's and Kanban's Velocity calculation; has no effect
+          on Committed.
         </div>
       </Section>
 
