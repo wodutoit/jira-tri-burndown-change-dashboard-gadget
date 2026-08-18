@@ -76,6 +76,20 @@ modules:
       edit:
         resource: main
 
+    - key: sprint-tri-release-capacity-gadget
+      title: TRI Release Capacity
+      description: One bar per space for a selected release — Committed vs.
+        Capacity, with a dashed Threshold line and a solid Capacity line.
+        Bar color flags whether each space is within threshold, over
+        threshold, or over capacity for that release. Only spaces with
+        Release Mapping enabled can be added.
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v4/static/gadgets/public/icons/tri-velocity.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
     - key: sprint-tri-kanban-burnup-gadget
       title: TRI Kanban Burnup
       description: Cumulative burn-up for a Kanban iteration — Target,

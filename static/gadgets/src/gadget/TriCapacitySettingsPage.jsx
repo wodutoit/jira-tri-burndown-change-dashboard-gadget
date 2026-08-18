@@ -231,6 +231,39 @@ export default function TriCapacitySettingsPage() {
         </div>
       </Section>
 
+      <div style={S.divider} />
+
+      <Section title="Release Mapping">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={settings.releaseMappingEnabled}
+            onChange={e => saveSettings({ releaseMappingEnabled: e.target.checked })}
+          />
+          Enable Release Mapping
+        </label>
+        <div style={S.hint}>
+          Release mapping will create a mapping between a sprint and a version. A sprint can only be assigned to a
+          single release. This is used to determine if capacity available and the items assigned in those sprints
+          are within threshold.
+        </div>
+        {settings.releaseMappingEnabled && (
+          <div style={{ marginTop: 10 }}>
+            <input
+              type="number" min="0" max="100"
+              value={settings.releaseThresholdPct}
+              onChange={e => setSettings(s => ({ ...s, releaseThresholdPct: e.target.value }))}
+              onBlur={e => saveSettings({ releaseThresholdPct: Math.min(100, Math.max(0, Number(e.target.value) || 70)) })}
+              style={{ ...S.select, width: 100 }}
+            /> % planned-work threshold
+            <div style={S.hint}>
+              The percentage of a release's capacity that should be planned features, leaving the remainder for
+              unplanned work, defects, etc.
+            </div>
+          </div>
+        )}
+      </Section>
+
       {boardType === 'kanban' && (
         <>
           <div style={S.divider} />

@@ -14,6 +14,7 @@ export default function TriCapacityPage() {
   const [boardType, setBoardType] = useState(null);
   const [boardId, setBoardId] = useState(null);
   const [settings, setSettings] = useState(null);
+  const [releaseOptions, setReleaseOptions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -32,6 +33,11 @@ export default function TriCapacityPage() {
       setBoardType(boardRes.boardType);
       setBoardId(boardRes.boardId);
       setSettings(settingsRes.settings);
+
+      if (settingsRes.settings?.releaseMappingEnabled) {
+        const relRes = await invoke('getReleaseOptions', { projectKey: proj.key });
+        setReleaseOptions(relRes.versions ?? []);
+      }
     }).catch(e => setError(String(e)))
       .finally(() => setLoading(false));
   }, []);
@@ -61,6 +67,9 @@ export default function TriCapacityPage() {
             graceWindowHours={settings.graceWindowHours}
             baseCapacitySp={settings.baseCapacitySp}
             defaultIterationLengthWeeks={settings.defaultIterationLengthWeeks}
+            releaseMappingEnabled={settings.releaseMappingEnabled}
+            releaseThresholdPct={settings.releaseThresholdPct}
+            releaseOptions={releaseOptions}
           />
         ) : (
           <CapacityScrumTab
@@ -69,6 +78,9 @@ export default function TriCapacityPage() {
             spFieldId={settings.spFieldId}
             graceWindowHours={settings.graceWindowHours}
             baseCapacitySp={settings.baseCapacitySp}
+            releaseMappingEnabled={settings.releaseMappingEnabled}
+            releaseThresholdPct={settings.releaseThresholdPct}
+            releaseOptions={releaseOptions}
           />
         )
       )}

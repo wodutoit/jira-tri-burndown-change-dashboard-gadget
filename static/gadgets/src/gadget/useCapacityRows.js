@@ -11,7 +11,7 @@ export function useCapacityRows({
   listResolver, listKey, listParams = {},
   getCommittedResolver, setCommittedResolver,
   getVelocityResolver, setVelocityResolver,
-  setCapacityResolver,
+  setCapacityResolver, setReleaseResolver,
 }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -38,6 +38,11 @@ export function useCapacityRows({
   const handleCapacityChange = async (id, capacitySp) => {
     patchRow(id, { capacitySp });
     await invoke(setCapacityResolver, { projectKey, [idField]: id, capacitySp });
+  };
+
+  const handleReleaseChange = async (id, releaseId) => {
+    patchRow(id, { releaseId });
+    await invoke(setReleaseResolver, { projectKey, [idField]: id, releaseId });
   };
 
   const handleCommittedChange = async (id, committedSp) => {
@@ -78,6 +83,6 @@ export function useCapacityRows({
     rows, setRows, loading, error, setError, reload: load,
     committedLoadingIds, velocityLoadingIds,
     handleCapacityChange, handleCommittedChange, handleGetCommitted,
-    handleVelocityChange, handleGetVelocity,
+    handleVelocityChange, handleGetVelocity, handleReleaseChange,
   };
 }

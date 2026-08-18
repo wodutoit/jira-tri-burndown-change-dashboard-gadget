@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { invoke } from '@forge/bridge';
 import { editStyles as S } from './sprintConfigShared';
 import { useCapacityRows } from './useCapacityRows';
-import { CapacityTableRow, HideClosedToggle, fmtDate } from './CapacityTableShared';
+import { CapacityTableRow, HideClosedToggle, fmtDate, ReleaseSelectCell, ReleasesSummaryTable } from './CapacityTableShared';
 import KanbanIterationDialog from './KanbanIterationDialog';
 import { localTodayISO } from './gadgetUtils';
 
@@ -39,18 +39,21 @@ function computeNextIterationDefaults(iterations, lengthWeeks, baseCapacitySp) {
   return { name: '', description: '', capacitySp: baseCapacitySp, startDate: startISO, endDate: endISO, status: 'future', labelFilter: '' };
 }
 
-export default function CapacityKanbanTab({ projectKey, spFieldId, graceWindowHours, baseCapacitySp, defaultIterationLengthWeeks }) {
+export default function CapacityKanbanTab({
+  projectKey, spFieldId, graceWindowHours, baseCapacitySp, defaultIterationLengthWeeks,
+  releaseMappingEnabled, releaseThresholdPct, releaseOptions,
+}) {
   const {
     rows, setRows, loading, error, setError, reload,
     committedLoadingIds, velocityLoadingIds,
     handleCapacityChange, handleCommittedChange, handleGetCommitted,
-    handleVelocityChange, handleGetVelocity,
+    handleVelocityChange, handleGetVelocity, handleReleaseChange,
   } = useCapacityRows({
     projectKey, spFieldId, graceWindowHours, idField: 'iterationId',
     listResolver: 'getKanbanIterations', listKey: 'iterations',
     getCommittedResolver: 'getIterationCommittedSp', setCommittedResolver: 'setIterationCommittedSp',
     getVelocityResolver: 'getIterationVelocitySp', setVelocityResolver: 'setIterationVelocitySp',
-    setCapacityResolver: 'setIterationCapacity',
+    setCapacityResolver: 'setIterationCapacity', setReleaseResolver: 'setIterationReleaseId',
   });
 
   const [hideCompleted, setHideCompleted] = useState(true);
@@ -143,6 +146,15 @@ export default function CapacityKanbanTab({ projectKey, spFieldId, graceWindowHo
         )}
       </div>
 
+      {releaseMappingEnabled && (
+        <ReleasesSummaryTable
+          rows={visibleRows}
+          releaseOptions={releaseOptions}
+          baseCapacitySp={baseCapacitySp}
+          thresholdPct={releaseThresholdPct}
+        />
+      )}
+
       <table style={S.table}>
         <thead>
           <tr>
@@ -151,12 +163,13 @@ export default function CapacityKanbanTab({ projectKey, spFieldId, graceWindowHo
             <th style={S.th}>Committed</th>
             <th style={S.th}>Velocity</th>
             <th style={S.th}>Status</th>
+            {releaseMappingEnabled && <th style={S.th}>Release</th>}
             <th style={{ ...S.th, textAlign: 'right' }}>Actions</th>
           </tr>
         </thead>
         <tbody>
           {visibleRows.length === 0 ? (
-            <tr><td style={S.td} colSpan={6}>No iterations yet — click "+ Add Iteration" to create one.</td></tr>
+            <tr><td style={S.td} colSpan={releaseMappingEnabled ? 7 : 6}>No iterations yet — click "+ Add Iteration" to create one.</td></tr>
           ) : visibleRows.map(it => (
             <CapacityTableRow
               key={it.id}
@@ -174,6 +187,14 @@ export default function CapacityKanbanTab({ projectKey, spFieldId, graceWindowHo
               onGetCommitted={() => handleGetCommitted(it.id)}
               onVelocityChange={v => handleVelocityChange(it.id, v)}
               onGetVelocity={() => handleGetVelocity(it.id)}
+              releaseSlot={releaseMappingEnabled ? (
+                <ReleaseSelectCell
+                  releaseId={it.releaseId}
+                  releaseOptions={releaseOptions}
+                  readOnly={it.status === 'completed'}
+                  onChange={v => handleReleaseChange(it.id, v)}
+                />
+              ) : undefined}
               statusSlot={
                 <div>
                   <select value={it.status} onChange={e => handleStatusChange(it.id, e.target.value)} style={{ ...S.select, width: 130 }}>

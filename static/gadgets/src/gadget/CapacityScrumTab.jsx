@@ -2,25 +2,28 @@ import React, { useState } from 'react';
 import { invoke, router } from '@forge/bridge';
 import { editStyles as S } from './sprintConfigShared';
 import { useCapacityRows } from './useCapacityRows';
-import { CapacityTableRow, StatusChip, HideClosedToggle, fmtDate } from './CapacityTableShared';
+import { CapacityTableRow, StatusChip, HideClosedToggle, fmtDate, ReleaseSelectCell, ReleasesSummaryTable } from './CapacityTableShared';
 import ScrumSprintEditDialog from './ScrumSprintEditDialog';
 
 const CLOSED_LIMIT_OPTIONS = [3, 5, 10, 15, 'all'];
 
-export default function CapacityScrumTab({ projectKey, boardId, spFieldId, graceWindowHours, baseCapacitySp }) {
+export default function CapacityScrumTab({
+  projectKey, boardId, spFieldId, graceWindowHours, baseCapacitySp,
+  releaseMappingEnabled, releaseThresholdPct, releaseOptions,
+}) {
   const [closedLimit, setClosedLimit] = useState(10);
 
   const {
     rows, loading, error, reload,
     committedLoadingIds, velocityLoadingIds,
     handleCapacityChange, handleCommittedChange, handleGetCommitted,
-    handleVelocityChange, handleGetVelocity,
+    handleVelocityChange, handleGetVelocity, handleReleaseChange,
   } = useCapacityRows({
     projectKey, spFieldId, graceWindowHours, idField: 'sprintId',
     listResolver: 'getScrumSprintsForCapacity', listKey: 'sprints', listParams: { closedLimit },
     getCommittedResolver: 'getSprintCommittedSp', setCommittedResolver: 'setSprintCommittedSp',
     getVelocityResolver: 'getSprintVelocitySp', setVelocityResolver: 'setSprintVelocitySp',
-    setCapacityResolver: 'setSprintCapacityOverride',
+    setCapacityResolver: 'setSprintCapacityOverride', setReleaseResolver: 'setSprintReleaseId',
   });
 
   const [hideClosed, setHideClosed] = useState(true);
@@ -78,6 +81,15 @@ export default function CapacityScrumTab({ projectKey, boardId, spFieldId, grace
         )}
       </div>
 
+      {releaseMappingEnabled && (
+        <ReleasesSummaryTable
+          rows={visibleRows}
+          releaseOptions={releaseOptions}
+          baseCapacitySp={baseCapacitySp}
+          thresholdPct={releaseThresholdPct}
+        />
+      )}
+
       <table style={S.table}>
         <thead>
           <tr>
@@ -86,12 +98,13 @@ export default function CapacityScrumTab({ projectKey, boardId, spFieldId, grace
             <th style={S.th}>Committed</th>
             <th style={S.th}>Velocity</th>
             <th style={S.th}>Status</th>
+            {releaseMappingEnabled && <th style={S.th}>Release</th>}
             <th style={{ ...S.th, textAlign: 'right' }}>Actions</th>
           </tr>
         </thead>
         <tbody>
           {visibleRows.length === 0 ? (
-            <tr><td style={S.td} colSpan={6}>No sprints to show.</td></tr>
+            <tr><td style={S.td} colSpan={releaseMappingEnabled ? 7 : 6}>No sprints to show.</td></tr>
           ) : visibleRows.map(sprint => (
             <CapacityTableRow
               key={sprint.id}
@@ -110,6 +123,14 @@ export default function CapacityScrumTab({ projectKey, boardId, spFieldId, grace
               onVelocityChange={v => handleVelocityChange(sprint.id, v)}
               onGetVelocity={() => handleGetVelocity(sprint.id)}
               statusSlot={<StatusChip state={sprint.state} />}
+              releaseSlot={releaseMappingEnabled ? (
+                <ReleaseSelectCell
+                  releaseId={sprint.releaseId}
+                  releaseOptions={releaseOptions}
+                  readOnly={sprint.state === 'closed'}
+                  onChange={v => handleReleaseChange(sprint.id, v)}
+                />
+              ) : undefined}
               actionsSlot={
                 <button onClick={() => { setEditingSprint(sprint); setEditError(null); }} style={S.smallBtn}>Edit</button>
               }

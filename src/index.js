@@ -552,10 +552,21 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, grace
       initialCommitted[key] = sp;
     }
 
-    // Every add/remove event nudges the running scope on the day it happened.
-    // snapToBizDay only rolls weekends → Monday; pre-sprint weekday events
-    // return a date before startDate and are filtered out by addDelta's range check.
+    // Every add/remove event nudges the running scope on the day it happened —
+    // except one already folded into initialScope above (any add/remove at or
+    // before the grace cutoff). Carrying an unfinished ticket into the next
+    // sprint logs a Sprint-field "added" event timestamped right at (or
+    // within the grace window of) the new sprint's start — exactly the kind
+    // of event `addTs <= cutoffMs` above already counts as committed, not
+    // scope creep. Without this skip, that same event ALSO landed as a
+    // same-day scope-change delta here, double-counting every carried-over
+    // ticket's SP as a spurious "added" event on day 1 (reported 2026-08-13,
+    // real repro: ZEN-1123/1127/1129 carried into Sprint 11 at the moment it
+    // started). snapToBizDay only rolls weekends → Monday; pre-sprint weekday
+    // events return a date before startDate and are filtered out by
+    // addDelta's range check regardless.
     for (const ev of issue.sprintEvents) {
+      if (Date.parse(ev.ts) <= cutoffMs) continue;
       addDelta(snapToBizDay(ev.ts), ev.type === 'added' ? sp : -sp);
     }
 
@@ -694,7 +705,7 @@ function computeScopeChangeData(sprint, issueData, statusMapping, graceWindowHou
   const bizDays = getBusinessDays(startDate, endDate);
   if (!bizDays.length) return null;
 
-  const { initialScope, scopeDeltaByDay } =
+  const { initialScope, scopeDeltaByDay, graceCutoffMs: cutoffMs } =
     computeScopeFoundation(sprint, issueData, statusMapping, bizDays, graceWindowHours);
 
   const labels = bizDays.map(dayLabel);
@@ -702,13 +713,17 @@ function computeScopeChangeData(sprint, issueData, statusMapping, graceWindowHou
 
   // Event-level rows for the table — only events that actually land a delta on
   // the chart above (same snapToBizDay + startDate/endDate range check as
-  // addDelta in computeScopeFoundation). Events outside that range don't move
-  // any bar, so they're excluded here too rather than showing an entry the
-  // chart can't explain.
+  // addDelta in computeScopeFoundation, plus the same grace-window skip: an
+  // add/remove already folded into initialScope — e.g. a ticket carried over
+  // at the moment the new sprint starts — isn't a "change", so it shouldn't
+  // get its own table row either). Events outside that range don't move any
+  // bar, so they're excluded here too rather than showing an entry the chart
+  // can't explain.
   const events = [];
   for (const [key, issue] of Object.entries(issueData)) {
     const sp = issue.sp || 0;
     for (const ev of issue.sprintEvents) {
+      if (Date.parse(ev.ts) <= cutoffMs) continue;
       const day = snapToBizDay(ev.ts);
       if (day < startDate || day > endDate) continue;
       events.push({ key, summary: issue.summary, ts: ev.ts, sp: ev.type === 'added' ? sp : -sp });
@@ -1143,7 +1158,7 @@ resolver.define('setCapacityPlanningEnabled', async ({ payload }) => {
 // extra property-check request per project. Bounded and one-off (Edit mode
 // only), not a hot path.
 resolver.define('getCapacityEnabledProjects', async ({ payload }) => {
-  const { boardTypeFilter } = payload ?? {};
+  const { boardTypeFilter, releaseMappingFilter } = payload ?? {};
   try {
     const res = await asUser().requestJira(
       route`/rest/api/3/project/search?maxResults=100&orderBy=name`,
@@ -1185,6 +1200,15 @@ resolver.define('getCapacityEnabledProjects', async ({ payload }) => {
       enabled = enabled.filter((_, i) => boardTypes[i] === boardTypeFilter);
     }
 
+    // Same cost class as boardTypeFilter above — one extra kvs read per
+    // already-Capacity-enabled project, only paid when a caller (TRI Release
+    // Capacity's space picker) actually needs it, so a space can't even be
+    // added if it has no release data to show.
+    if (releaseMappingFilter) {
+      const settingsList = await Promise.all(enabled.map(p => kvs.get(`capacity-settings:${p.key}`)));
+      enabled = enabled.filter((_, i) => settingsList[i]?.releaseMappingEnabled === true);
+    }
+
     return { projects: enabled };
   } catch (e) {
     return { projects: [], error: e.message };
@@ -1215,6 +1239,8 @@ const CAPACITY_SETTINGS_DEFAULTS = {
   kanbanCommittedStatuses: [],
   kanbanCommittedUsesLabelFilter: false,
   excludedDoneStatuses: [],
+  releaseMappingEnabled: false,
+  releaseThresholdPct: 70,
 };
 const CAPACITY_BOARD_TYPE_OVERRIDE_OPTIONS = ['auto', 'scrum', 'kanban'];
 
@@ -1253,12 +1279,204 @@ resolver.define('setCapacitySettings', async ({ payload }) => {
     excludedDoneStatuses: Array.isArray(settings.excludedDoneStatuses)
       ? settings.excludedDoneStatuses.filter(s => typeof s === 'string' && s)
       : [],
+    releaseMappingEnabled: !!settings.releaseMappingEnabled,
+    releaseThresholdPct: Math.min(100, Math.max(0, Number(settings.releaseThresholdPct) || 70)),
   };
   try {
     await kvs.set(`capacity-settings:${projectKey}`, merged);
     return { ok: true, settings: merged };
   } catch (e) {
     return { error: e.message };
+  }
+});
+
+// Full, unfiltered version list (released + archived included) — the
+// editable Release <select> filters this down to unreleased/unarchived
+// client-side, but read-only cells and the Releases summary table need to
+// resolve a name for ANY previously-assigned version id, including ones
+// that have since shipped or been archived. Shared by getReleaseOptions and
+// getReleaseCapacityRollup, which both need this identical list — one just
+// returns it, the other resolves a release name/auto-pick to a version id.
+async function fetchProjectVersions(projectKey) {
+  const res = await asUser().requestJira(
+    route`/rest/api/3/project/${projectKey}/versions`,
+    { headers: { Accept: 'application/json' } }
+  );
+  if (!res.ok) throw new Error(`Failed to fetch versions: ${res.status}`);
+  const data = await res.json();
+  return data.map(v => ({
+    id: v.id, name: v.name, released: !!v.released, archived: !!v.archived,
+    releaseDate: v.releaseDate || null,
+  }));
+}
+
+resolver.define('getReleaseOptions', async ({ payload }) => {
+  const { projectKey } = payload ?? {};
+  if (!projectKey) return { versions: [], error: 'No project key.' };
+  try {
+    return { versions: await fetchProjectVersions(projectKey) };
+  } catch (e) {
+    return { versions: [], error: e.message };
+  }
+});
+
+// Soonest-upcoming unreleased version by releaseDate; falls back to the most
+// recent past unreleased version if none are upcoming, then to any undated
+// unreleased version, else null. `todayISO` is passed in from the browser
+// rather than computed here — same reason localTodayISO() exists elsewhere
+// in this app: a Forge function's own clock runs in UTC and can lag a full
+// calendar day behind the viewer's local "today".
+function pickAutoVersion(versions, todayISO) {
+  const candidates = versions.filter(v => !v.archived && !v.released);
+  const dated = candidates.filter(v => v.releaseDate).sort((a, b) => (a.releaseDate < b.releaseDate ? -1 : 1));
+  const upcoming = dated.filter(v => v.releaseDate >= todayISO);
+  if (upcoming.length) return upcoming[0];
+  if (dated.length) return dated[dated.length - 1];
+  const undated = candidates.filter(v => !v.releaseDate);
+  return undated[0] || null;
+}
+
+// Fetches the one set of rows (sprints for Scrum, iterations for Kanban) a
+// project's release rollups are computed from — factored out so a caller
+// that needs MANY releases for the SAME project (getReleaseRoadmapRollup)
+// fetches this once, not once per release.
+async function fetchReleaseMappedRows(projectKey) {
+  const { board, error: boardErr } = await getBoardForProject(projectKey);
+  if (boardErr) return { error: boardErr };
+  const boardType = await resolveBoardType(board);
+
+  if (boardType === 'kanban') {
+    return { rows: await getIterations(projectKey) };
+  }
+  const [active, future, closed] = await Promise.all([
+    fetchSprintsByState(board.id, 'active', 10),
+    fetchSprintsByState(board.id, 'future', 20),
+    fetchSprintsByState(board.id, 'closed', 'all'),
+  ]);
+  const overrides = await getCapacityRows(projectKey);
+  return { rows: [...active, ...future, ...closed].map(s => ({ id: s.id, ...(overrides[s.id] || {}) })) };
+}
+
+// Pure sum — no I/O — so it's cheap to call once per release in a roadmap
+// against the same already-fetched row set.
+function rollupForVersion(rows, targetVersion, settings) {
+  const numOr = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+  const mapped = rows.filter(r => r.releaseId === targetVersion.id);
+  const totalCapacity = mapped.reduce((a, r) => a + numOr(r.capacitySp, settings.baseCapacitySp), 0);
+  const totalCommitted = mapped.reduce((a, r) => a + numOr(r.committedSp, 0), 0);
+  const thresholdSp = totalCapacity * (settings.releaseThresholdPct / 100);
+  return { totalCapacity, totalCommitted, thresholdSp, thresholdPct: settings.releaseThresholdPct };
+}
+
+// TRI Release Capacity gadget's "By space" data source — one bar per
+// configured space for a single release, matched across spaces by NAME
+// (Jira versions are per-project; there's no shared cross-project release
+// object). When `releaseName` is omitted, each space independently
+// auto-picks its own soonest-upcoming release via pickAutoVersion — a
+// per-space rule, so different bars can legitimately show different
+// release names in that mode.
+resolver.define('getReleaseCapacityRollup', async ({ payload }) => {
+  const { spaces, releaseName, todayISO } = payload ?? {};
+  if (!Array.isArray(spaces) || spaces.length === 0) return { results: [], error: 'No spaces configured.' };
+
+  const results = [];
+
+  for (const space of spaces) {
+    const { projectKey } = space ?? {};
+    if (!projectKey) { results.push({ projectKey, error: 'Incomplete configuration.' }); continue; }
+    try {
+      // The View has no other source for a project's display name (unlike
+      // Edit, which already has it from getCapacityEnabledProjects) — same
+      // getSpaceName() getVelocityData already uses for the same reason,
+      // kvs-cached so this is cheap on repeat calls.
+      const name = await getSpaceName(projectKey);
+      const settings = await getCapacitySettingsFor(projectKey);
+      if (!settings.releaseMappingEnabled) {
+        results.push({ projectKey, name, error: 'Release Mapping is not enabled for this space.' });
+        continue;
+      }
+
+      const versions = await fetchProjectVersions(projectKey);
+      const releaseNames = versions.filter(v => !v.archived).map(v => v.name);
+      const targetVersion = releaseName
+        ? versions.find(v => v.name === releaseName)
+        : pickAutoVersion(versions, todayISO);
+
+      if (!targetVersion) {
+        results.push({ projectKey, name, releaseId: null, releaseName: null, releaseNames, error: 'No matching release.' });
+        continue;
+      }
+
+      const { rows, error: rowsErr } = await fetchReleaseMappedRows(projectKey);
+      if (rowsErr) { results.push({ projectKey, name, error: rowsErr }); continue; }
+
+      results.push({
+        projectKey, name, releaseId: targetVersion.id, releaseName: targetVersion.name,
+        releaseNames, ...rollupForVersion(rows, targetVersion, settings),
+      });
+    } catch (e) {
+      results.push({ projectKey, error: e.message });
+    }
+  }
+
+  return { results };
+});
+
+// Ordered roadmap for ONE space: the anchor release first, then the next
+// `futureCount` unreleased/unarchived versions after it (by releaseDate,
+// undated ones last) — the single-space analog of getReleaseCapacityRollup's
+// multi-space bar set. The anchor itself is always included regardless of
+// its own released/archived state (a manually-picked "current version"
+// could be anything), unlike the candidates that follow it.
+function buildReleaseRoadmap(versions, anchorVersion, futureCount) {
+  const dated = versions
+    .filter(v => !v.archived && !v.released && v.releaseDate && v.id !== anchorVersion.id)
+    .sort((a, b) => (a.releaseDate < b.releaseDate ? -1 : 1));
+  const undated = versions.filter(v => !v.archived && !v.released && !v.releaseDate && v.id !== anchorVersion.id);
+  const upcoming = [...dated, ...undated].slice(0, futureCount);
+  return [anchorVersion, ...upcoming];
+}
+
+// TRI Release Capacity gadget's "By release" data source — one space's
+// roadmap across several releases, reusing the same row fetch for all of
+// them (same project, so board/rows only need fetching once).
+resolver.define('getReleaseRoadmapRollup', async ({ payload }) => {
+  const { projectKey, releaseName, futureCount, todayISO } = payload ?? {};
+  if (!projectKey) return { results: [], error: 'No project key.' };
+  try {
+    const settings = await getCapacitySettingsFor(projectKey);
+    if (!settings.releaseMappingEnabled) {
+      return { results: [], error: 'Release Mapping is not enabled for this space.' };
+    }
+
+    const versions = await fetchProjectVersions(projectKey);
+    const releaseNames = versions.filter(v => !v.archived).map(v => v.name);
+    // Same anchor-selection rule as getReleaseCapacityRollup, keyed by name
+    // (not id) so the same "Current version"/"Default Release" config field
+    // and the same live dropdown work unchanged across both modes.
+    const anchorVersion = releaseName
+      ? versions.find(v => v.name === releaseName)
+      : pickAutoVersion(versions, todayISO);
+
+    if (!anchorVersion) return { results: [], releaseNames, error: 'No matching release.' };
+
+    const roadmap = buildReleaseRoadmap(versions, anchorVersion, Number(futureCount) || 4);
+    const { rows, error: rowsErr } = await fetchReleaseMappedRows(projectKey);
+    if (rowsErr) return { results: [], releaseNames, error: rowsErr };
+
+    const results = roadmap.map(v => ({
+      releaseId: v.id, releaseName: v.name, releaseDate: v.releaseDate,
+      ...rollupForVersion(rows, v, settings),
+    }));
+
+    // The View has no other source for this space's display name (it only
+    // ever configures a projectKey) — same getSpaceName() reasoning as
+    // getReleaseCapacityRollup, so the header can show which space this
+    // roadmap belongs to.
+    const name = await getSpaceName(projectKey);
+    return { name, results, releaseNames };
+  } catch (e) {
+    return { results: [], error: e.message };
   }
 });
 
@@ -1401,6 +1619,7 @@ resolver.define('getScrumSprintsForCapacity', async ({ payload }) => {
       id: s.id, name: s.name, state, startDate: s.startDate, endDate: s.endDate,
       completeDate: s.completeDate, goal: s.goal || '',
       capacitySp: null, committedSp: null, committedAt: null, velocitySp: null, velocityAt: null,
+      releaseId: null,
       ...(overrides[s.id] || {}),
     });
 
@@ -1531,6 +1750,17 @@ resolver.define('setSprintCapacityOverride', async ({ payload }) => {
   }
 });
 
+resolver.define('setSprintReleaseId', async ({ payload }) => {
+  const { projectKey, sprintId, releaseId } = payload ?? {};
+  if (!projectKey || !sprintId) return { error: 'Missing config.' };
+  try {
+    await updateCapacityRow(projectKey, sprintId, { releaseId: releaseId || null });
+    return { ok: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
 // Deliberately excludes `name` — requirements limit editing to the sprint's
 // Goal ("description" in the requirements' wording; Jira's actual field is
 // `goal`) and dates. Uses POST (Jira's *partial* sprint update) rather than
@@ -1626,6 +1856,7 @@ resolver.define('saveKanbanIteration', async ({ payload }) => {
       committedAt: existing?.committedAt ?? null,
       velocitySp: existing?.velocitySp ?? null,
       velocityAt: existing?.velocityAt ?? null,
+      releaseId: existing?.releaseId ?? null,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     };
@@ -1935,6 +2166,20 @@ resolver.define('setIterationCapacity', async ({ payload }) => {
     const iterations = await getIterations(projectKey);
     if (!iterations.some(it => it.id === iterationId)) return { error: 'Iteration not found.' };
     const next = iterations.map(it => it.id === iterationId ? { ...it, capacitySp: Number(capacitySp) || 0 } : it);
+    await saveIterations(projectKey, next);
+    return { ok: true };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('setIterationReleaseId', async ({ payload }) => {
+  const { projectKey, iterationId, releaseId } = payload ?? {};
+  if (!projectKey || !iterationId) return { error: 'Missing config.' };
+  try {
+    const iterations = await getIterations(projectKey);
+    if (!iterations.some(it => it.id === iterationId)) return { error: 'Iteration not found.' };
+    const next = iterations.map(it => it.id === iterationId ? { ...it, releaseId: releaseId || null } : it);
     await saveIterations(projectKey, next);
     return { ok: true };
   } catch (e) {

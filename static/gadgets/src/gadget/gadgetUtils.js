@@ -22,3 +22,14 @@ export function localTodayISO() {
   const dd = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${mm}-${dd}`;
 }
+
+// Shared by the Capacity page's Releases summary table and the TRI Release
+// Capacity gadget's chart — both need the same three-tier classification of
+// "how is this release tracking", just with different presentations (a chip
+// vs. a bar color), so only the tier boundaries are shared, not the colors.
+export function classifyReleaseStatus(totalCommitted, totalCapacity, thresholdPct) {
+  if (totalCapacity === 0) return { tier: 'none' };
+  if (totalCommitted > totalCapacity) return { tier: 'overCapacity' };
+  if (totalCommitted > totalCapacity * (thresholdPct / 100)) return { tier: 'overThreshold' };
+  return { tier: 'within' };
+}
