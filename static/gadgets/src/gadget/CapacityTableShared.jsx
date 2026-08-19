@@ -166,6 +166,10 @@ export function ReleasesSummaryTable({ rows, releaseOptions, baseCapacitySp, thr
   const summaries = [...groups.entries()].map(([releaseId, group]) => {
     const totalCapacity = group.reduce((a, r) => a + (r.capacitySp ?? baseCapacitySp ?? 0), 0);
     const totalCommitted = group.reduce((a, r) => a + (r.committedSp ?? 0), 0);
+    // Same figure classifyReleaseStatus derives internally for the tier
+    // check below — computed once here so it can also be shown as its own
+    // column, instead of being an invisible intermediate value.
+    const thresholdCapacity = totalCapacity * (thresholdPct / 100);
     // A future/in-progress sprint's velocity reads as 0 (nothing's Done yet)
     // long before it means anything — averaging that 0 in would drag the
     // release average down purely because the release isn't finished, not
@@ -177,22 +181,23 @@ export function ReleasesSummaryTable({ rows, releaseOptions, baseCapacitySp, thr
       : 0;
 
     // Tier boundaries come from the shared classifier (also used by the TRI
-    // Release Capacity gadget's chart) — only the presentation is local here:
-    // both over-tiers render as the same red chip on this table (unchanged
-    // from before this was extracted), while the threshold % is baked into
-    // the label itself so it's visible without a separate column.
+    // Release Capacity gadget's chart) — presentation now matches that
+    // gadget's traffic-light convention: Over Threshold is amber (still
+    // within capacity, buffer eaten into), Over Capacity is red (no buffer
+    // left at all). Previously both over-tiers rendered as the same red
+    // chip; the user asked for the distinction to match the gadget.
     const { tier } = classifyReleaseStatus(totalCommitted, totalCapacity, thresholdPct);
     const STATUS_LABELS = {
       none: { label: '—', bg: 'transparent', text: 'var(--text-subtlest)' },
       overCapacity: { label: 'Over Capacity', bg: 'var(--over-bg)', text: 'var(--over-text)' },
-      overThreshold: { label: `Over Threshold (${thresholdPct}%)`, bg: 'var(--over-bg)', text: 'var(--over-text)' },
+      overThreshold: { label: `Over Threshold (${thresholdPct}%)`, bg: 'var(--filling-bg)', text: 'var(--filling-text)' },
       within: { label: `Within Threshold (${thresholdPct}%)`, bg: 'var(--ok-bg)', text: 'var(--ok-text)' },
     };
     const status = STATUS_LABELS[tier];
 
     return {
       releaseId, name: releaseLabel(releaseId, releaseOptions) ?? releaseId,
-      sprintCount: group.length, totalCapacity, totalCommitted, avgVelocity, status,
+      sprintCount: group.length, totalCapacity, thresholdCapacity, totalCommitted, avgVelocity, status,
     };
   });
 
@@ -203,6 +208,7 @@ export function ReleasesSummaryTable({ rows, releaseOptions, baseCapacitySp, thr
           <th style={S.th}>Release</th>
           <th style={S.th}>Sprint count</th>
           <th style={S.th}>Total capacity</th>
+          <th style={S.th}>Threshold capacity</th>
           <th style={S.th}>Total committed</th>
           <th style={S.th}>Avg velocity</th>
           <th style={S.th}>Status</th>
@@ -210,12 +216,13 @@ export function ReleasesSummaryTable({ rows, releaseOptions, baseCapacitySp, thr
       </thead>
       <tbody>
         {summaries.length === 0 ? (
-          <tr><td style={S.td} colSpan={6}>No releases mapped yet.</td></tr>
+          <tr><td style={S.td} colSpan={7}>No releases mapped yet.</td></tr>
         ) : summaries.map(s => (
           <tr key={s.releaseId} style={S.row}>
             <td style={S.td}>{s.name}</td>
             <td style={S.td}>{s.sprintCount}</td>
             <td style={S.td}>{Math.round(s.totalCapacity * 10) / 10}</td>
+            <td style={S.td}>{Math.round(s.thresholdCapacity * 10) / 10}</td>
             <td style={S.td}>{Math.round(s.totalCommitted * 10) / 10}</td>
             <td style={S.td}>{Math.round(s.avgVelocity * 10) / 10}</td>
             <td style={S.td}>
