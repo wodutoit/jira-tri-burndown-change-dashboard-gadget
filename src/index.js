@@ -1422,18 +1422,22 @@ resolver.define('getReleaseCapacityRollup', async ({ payload }) => {
   return { results };
 });
 
-// Ordered roadmap for ONE space: the anchor release first, then the next
-// `futureCount` unreleased/unarchived versions after it (by releaseDate,
-// undated ones last) — the single-space analog of getReleaseCapacityRollup's
-// multi-space bar set. The anchor itself is always included regardless of
-// its own released/archived state (a manually-picked "current version"
-// could be anything), unlike the candidates that follow it.
-function buildReleaseRoadmap(versions, anchorVersion, futureCount) {
+// Ordered roadmap for ONE space: the anchor release first, then enough
+// unreleased/unarchived versions after it (by releaseDate, undated ones
+// last) to reach `releaseCount` releases TOTAL — the single-space analog of
+// getReleaseCapacityRollup's multi-space bar set. `releaseCount` is the
+// total number of bars shown, so `releaseCount: 1` means the anchor alone,
+// not "the anchor plus 1 more" (an earlier version of this treated the
+// count as "future releases in addition to current", which meant setting
+// it to 1 always showed 2 bars — fixed). The anchor itself is always
+// included regardless of its own released/archived state (a manually-picked
+// "current release" could be anything), unlike the candidates that follow it.
+function buildReleaseRoadmap(versions, anchorVersion, releaseCount) {
   const dated = versions
     .filter(v => !v.archived && !v.released && v.releaseDate && v.id !== anchorVersion.id)
     .sort((a, b) => (a.releaseDate < b.releaseDate ? -1 : 1));
   const undated = versions.filter(v => !v.archived && !v.released && !v.releaseDate && v.id !== anchorVersion.id);
-  const upcoming = [...dated, ...undated].slice(0, futureCount);
+  const upcoming = [...dated, ...undated].slice(0, Math.max(0, releaseCount - 1));
   return [anchorVersion, ...upcoming];
 }
 
@@ -1441,7 +1445,7 @@ function buildReleaseRoadmap(versions, anchorVersion, futureCount) {
 // roadmap across several releases, reusing the same row fetch for all of
 // them (same project, so board/rows only need fetching once).
 resolver.define('getReleaseRoadmapRollup', async ({ payload }) => {
-  const { projectKey, releaseName, futureCount, todayISO } = payload ?? {};
+  const { projectKey, releaseName, releaseCount, todayISO } = payload ?? {};
   if (!projectKey) return { results: [], error: 'No project key.' };
   try {
     const settings = await getCapacitySettingsFor(projectKey);
@@ -1460,7 +1464,7 @@ resolver.define('getReleaseRoadmapRollup', async ({ payload }) => {
 
     if (!anchorVersion) return { results: [], releaseNames, error: 'No matching release.' };
 
-    const roadmap = buildReleaseRoadmap(versions, anchorVersion, Number(futureCount) || 4);
+    const roadmap = buildReleaseRoadmap(versions, anchorVersion, Math.max(1, Number(releaseCount) || 4));
     const { rows, error: rowsErr } = await fetchReleaseMappedRows(projectKey);
     if (rowsErr) return { results: [], releaseNames, error: rowsErr };
 

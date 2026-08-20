@@ -3,7 +3,7 @@ import { invoke, view } from '@forge/bridge';
 import { localTodayISO, classifyReleaseStatus } from './gadgetUtils';
 
 const TRACK_H = 130;
-const FUTURE_OPTIONS = [1, 2, 3, 4, 5, 6];
+const RELEASE_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 // Shares tier boundaries with the Capacity page's Releases summary table
 // (classifyReleaseStatus, gadgetUtils.js) but not its presentation — this
@@ -200,7 +200,7 @@ export default function TriReleaseCapacityGadgetView() {
   const [error, setError] = useState(null);
   const [config, setConfig] = useState(null);
   const [releaseName, setReleaseName] = useState('');
-  const [futureCount, setFutureCount] = useState(4);
+  const [releaseCount, setReleaseCount] = useState(4);
   const [spaceName, setSpaceName] = useState('');
   const [results, setResults] = useState([]);
   const [releaseNames, setReleaseNames] = useState([]);
@@ -216,7 +216,7 @@ export default function TriReleaseCapacityGadgetView() {
         const cfg = ctx?.extension?.gadgetConfiguration ?? {};
         setConfig(cfg);
         setReleaseName(cfg.releaseName ?? '');
-        setFutureCount(Math.min(6, Math.max(1, cfg.futureCount ?? 4)));
+        setReleaseCount(Math.min(6, Math.max(1, cfg.releaseCount ?? 4)));
       })
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false));
@@ -224,23 +224,35 @@ export default function TriReleaseCapacityGadgetView() {
 
   useEffect(() => {
     if (!hasConfig) return;
+    // `ignore` guards against a stale response overwriting a newer one — if
+    // the viewer changes "Releases to show" (or the Release dropdown) again
+    // before the previous request finishes, both calls are in flight and
+    // whichever RESOLVES last wins, not whichever was SENT last. Without
+    // this guard, a slower earlier response landing after a newer one
+    // silently reverts the chart to the wrong count — indistinguishable
+    // from "changing the selection does nothing" if you toggle it a couple
+    // of times while testing.
+    let ignore = false;
     setFetching(true);
     setError(null);
     const todayISO = localTodayISO();
     const call = mode === 'byRelease'
-      ? invoke('getReleaseRoadmapRollup', { projectKey: config.projectKey, releaseName: releaseName || null, futureCount, todayISO })
+      ? invoke('getReleaseRoadmapRollup', { projectKey: config.projectKey, releaseName: releaseName || null, releaseCount, todayISO })
       : invoke('getReleaseCapacityRollup', { spaces: config.spaces, releaseName: releaseName || null, todayISO });
 
     call.then(res => {
+      if (ignore) return;
       if (res.error) setError(res.error);
       setResults(res.results ?? []);
       setSpaceName(res.name ?? '');
       setReleaseNames(mode === 'byRelease' ? (res.releaseNames ?? []) : [...new Set((res.results ?? []).flatMap(r => r.releaseNames ?? []))].sort());
     })
-      .catch(e => setError(String(e)))
-      .finally(() => setFetching(false));
+      .catch(e => { if (!ignore) setError(String(e)); })
+      .finally(() => { if (!ignore) setFetching(false); });
+
+    return () => { ignore = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasConfig, mode, releaseName, futureCount]);
+  }, [hasConfig, mode, releaseName, releaseCount]);
 
   if (loading) {
     return <div style={{ padding: 24, fontSize: 13 }}>Loading…</div>;
@@ -270,11 +282,11 @@ export default function TriReleaseCapacityGadgetView() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase', color: 'var(--text-subtlest)' }}>Releases to show</span>
               <select
-                value={futureCount}
-                onChange={e => setFutureCount(parseInt(e.target.value, 10))}
+                value={releaseCount}
+                onChange={e => setReleaseCount(parseInt(e.target.value, 10))}
                 style={{ border: '1px solid var(--border)', borderRadius: 4, padding: '5px 8px', fontSize: 13, color: 'var(--text)', background: 'var(--surface)', fontFamily: 'inherit', width: 120 }}
               >
-                {FUTURE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
+                {RELEASE_COUNT_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
               </select>
             </div>
           </div>

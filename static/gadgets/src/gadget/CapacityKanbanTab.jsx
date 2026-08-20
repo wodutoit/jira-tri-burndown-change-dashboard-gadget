@@ -191,7 +191,6 @@ export default function CapacityKanbanTab({
                 <ReleaseSelectCell
                   releaseId={it.releaseId}
                   releaseOptions={releaseOptions}
-                  readOnly={it.status === 'completed'}
                   onChange={v => handleReleaseChange(it.id, v)}
                 />
               ) : undefined}

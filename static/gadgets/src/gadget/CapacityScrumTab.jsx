@@ -127,7 +127,6 @@ export default function CapacityScrumTab({
                 <ReleaseSelectCell
                   releaseId={sprint.releaseId}
                   releaseOptions={releaseOptions}
-                  readOnly={sprint.state === 'closed'}
                   onChange={v => handleReleaseChange(sprint.id, v)}
                 />
               ) : undefined}

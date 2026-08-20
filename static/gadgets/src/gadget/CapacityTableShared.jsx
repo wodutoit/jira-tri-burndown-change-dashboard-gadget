@@ -124,15 +124,11 @@ function sortReleases(versions) {
 
 // Editable <select> of unreleased/unarchived versions (plus whatever's
 // currently assigned, even if it's since shipped/archived, so an existing
-// assignment never silently disappears from its own dropdown) — read-only
-// rows render the resolved name as plain text instead, same visual
-// convention as InlineNumberField's non-editable branch.
-export function ReleaseSelectCell({ releaseId, releaseOptions, readOnly, onChange }) {
-  if (readOnly) {
-    const label = releaseLabel(releaseId, releaseOptions);
-    return <span style={{ fontSize: 12, color: 'var(--text-subtle)' }}>{label ?? '—'}</span>;
-  }
-
+// assignment never silently disappears from its own dropdown) — always
+// editable, including closed sprints/completed iterations, since a release
+// already assigned there may itself have since shipped and still needs to
+// be changeable.
+export function ReleaseSelectCell({ releaseId, releaseOptions, onChange }) {
   const current = releaseId ? findRelease(releaseId, releaseOptions) : null;
   const selectable = releaseOptions.filter(v => !v.released && !v.archived);
   const options = current && !selectable.some(v => v.id === current.id)

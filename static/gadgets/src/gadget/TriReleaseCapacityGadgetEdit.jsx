@@ -4,7 +4,7 @@ import { editStyles as S, Section } from './sprintConfigShared';
 import { localTodayISO } from './gadgetUtils';
 import VelocitySpaceRow from './VelocitySpaceRow';
 
-const FUTURE_OPTIONS = [1, 2, 3, 4, 5, 6];
+const RELEASE_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 function emptySpace() {
   return { projectKey: '' };
@@ -17,7 +17,7 @@ export default function TriReleaseCapacityGadgetEdit() {
   const [projectKey, setProjectKey] = useState('');
   const [releaseName, setReleaseName] = useState('');
   const [releaseNameOptions, setReleaseNameOptions] = useState([]);
-  const [futureCount, setFutureCount] = useState(4);
+  const [releaseCount, setReleaseCount] = useState(4);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -35,7 +35,7 @@ export default function TriReleaseCapacityGadgetEdit() {
       setMode(cfg.mode === 'byRelease' ? 'byRelease' : 'bySpace');
       setReleaseName(cfg.releaseName ?? '');
       setProjectKey(cfg.projectKey ?? '');
-      setFutureCount(Math.min(6, Math.max(1, cfg.futureCount ?? 4)));
+      setReleaseCount(Math.min(6, Math.max(1, cfg.releaseCount ?? 4)));
 
       const savedSpaces = Array.isArray(cfg.spaces) && cfg.spaces.length > 0 ? cfg.spaces : [{ projectKey: '' }];
       setSpaces(savedSpaces.map(s => ({ projectKey: s.projectKey ?? '' })));
@@ -80,7 +80,7 @@ export default function TriReleaseCapacityGadgetEdit() {
     try {
       await view.submit({
         mode, spaces: spaces.map(({ projectKey }) => ({ projectKey })),
-        projectKey, releaseName: releaseName || null, futureCount,
+        projectKey, releaseName: releaseName || null, releaseCount,
       });
     } finally {
       setSaving(false);
@@ -174,13 +174,14 @@ export default function TriReleaseCapacityGadgetEdit() {
       {mode === 'byRelease' && (
         <>
           <div style={S.divider} />
-          <Section title="Future releases to show">
-            <select value={futureCount} onChange={e => setFutureCount(parseInt(e.target.value, 10))} style={{ ...S.select, width: 120 }}>
-              {FUTURE_OPTIONS.map(f => <option key={f} value={f}>{f}</option>)}
+          <Section title="Releases to show">
+            <select value={releaseCount} onChange={e => setReleaseCount(parseInt(e.target.value, 10))} style={{ ...S.select, width: 120 }}>
+              {RELEASE_COUNT_OPTIONS.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
             <div style={S.hint}>
-              Shown alongside the current release, in addition to it. Viewers can change this count live on the
-              gadget itself — this is only the starting default.
+              Total number of releases shown, starting with the current one (so "1" shows only the current
+              release, with no upcoming ones). Viewers can change this count live on the gadget itself — this is
+              only the starting default.
             </div>
           </Section>
         </>
