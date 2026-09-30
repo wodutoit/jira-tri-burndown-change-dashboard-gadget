@@ -5,6 +5,7 @@ import { localTodayISO } from './gadgetUtils';
 import VelocitySpaceRow from './VelocitySpaceRow';
 
 const RELEASE_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6];
+const PREVIOUS_RELEASE_OPTIONS = [0, 1, 2, 3, 5, 10, 'all'];
 
 function emptySpace() {
   return { projectKey: '' };
@@ -18,6 +19,7 @@ export default function TriReleaseCapacityGadgetEdit() {
   const [releaseName, setReleaseName] = useState('');
   const [releaseNameOptions, setReleaseNameOptions] = useState([]);
   const [releaseCount, setReleaseCount] = useState(4);
+  const [previousReleaseCount, setPreviousReleaseCount] = useState(3);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -36,6 +38,7 @@ export default function TriReleaseCapacityGadgetEdit() {
       setReleaseName(cfg.releaseName ?? '');
       setProjectKey(cfg.projectKey ?? '');
       setReleaseCount(Math.min(6, Math.max(1, cfg.releaseCount ?? 4)));
+      setPreviousReleaseCount(PREVIOUS_RELEASE_OPTIONS.includes(cfg.previousReleaseCount) ? cfg.previousReleaseCount : 3);
 
       const savedSpaces = Array.isArray(cfg.spaces) && cfg.spaces.length > 0 ? cfg.spaces : [{ projectKey: '' }];
       setSpaces(savedSpaces.map(s => ({ projectKey: s.projectKey ?? '' })));
@@ -51,7 +54,7 @@ export default function TriReleaseCapacityGadgetEdit() {
       ? (projectKey ? [{ projectKey }] : [])
       : spaces.filter(s => s.projectKey);
     if (relevantSpaces.length === 0) { setReleaseNameOptions([]); return; }
-    invoke('getReleaseCapacityRollup', { spaces: relevantSpaces, releaseName: null, todayISO: localTodayISO() })
+    invoke('getReleaseCapacityRollup', { spaces: relevantSpaces, releaseName: null, todayISO: localTodayISO(), previousReleaseCount: mode === 'bySpace' ? previousReleaseCount : null })
       .then(res => {
         const names = new Set();
         (res.results ?? []).forEach(r => (r.releaseNames ?? []).forEach(n => names.add(n)));
@@ -59,7 +62,7 @@ export default function TriReleaseCapacityGadgetEdit() {
       })
       .catch(() => setReleaseNameOptions([]));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, projectKey, JSON.stringify(spaces.map(s => s.projectKey))]);
+  }, [mode, projectKey, previousReleaseCount, JSON.stringify(spaces.map(s => s.projectKey))]);
 
   const updateSpace = (index, patch) => {
     setSpaces(cur => cur.map((s, i) => i === index ? { ...s, ...patch } : s));
@@ -80,7 +83,7 @@ export default function TriReleaseCapacityGadgetEdit() {
     try {
       await view.submit({
         mode, spaces: spaces.map(({ projectKey }) => ({ projectKey })),
-        projectKey, releaseName: releaseName || null, releaseCount,
+        projectKey, releaseName: releaseName || null, releaseCount, previousReleaseCount,
       });
     } finally {
       setSaving(false);
@@ -170,6 +173,25 @@ export default function TriReleaseCapacityGadgetEdit() {
           </div>
         )}
       </Section>
+
+      {mode === 'bySpace' && (
+        <>
+          <div style={S.divider} />
+          <Section title="Previous releases to list">
+            <select
+              value={previousReleaseCount}
+              onChange={e => setPreviousReleaseCount(e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10))}
+              style={{ ...S.select, width: 120 }}
+            >
+              {PREVIOUS_RELEASE_OPTIONS.map(n => <option key={n} value={n}>{n === 'all' ? 'All' : n}</option>)}
+            </select>
+            <div style={S.hint}>
+              How many already-released releases to offer in the Release dropdown, most recent first. All
+              unreleased releases are always listed, and the currently selected release is never dropped.
+            </div>
+          </Section>
+        </>
+      )}
 
       {mode === 'byRelease' && (
         <>

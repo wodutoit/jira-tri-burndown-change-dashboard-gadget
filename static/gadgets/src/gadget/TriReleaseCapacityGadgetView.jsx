@@ -238,7 +238,7 @@ export default function TriReleaseCapacityGadgetView() {
     const todayISO = localTodayISO();
     const call = mode === 'byRelease'
       ? invoke('getReleaseRoadmapRollup', { projectKey: config.projectKey, releaseName: releaseName || null, releaseCount, todayISO })
-      : invoke('getReleaseCapacityRollup', { spaces: config.spaces, releaseName: releaseName || null, todayISO });
+      : invoke('getReleaseCapacityRollup', { spaces: config.spaces, releaseName: releaseName || null, todayISO, previousReleaseCount: config.previousReleaseCount ?? 3 });
 
     call.then(res => {
       if (ignore) return;

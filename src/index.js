@@ -1368,6 +1368,24 @@ function rollupForVersion(rows, targetVersion, settings) {
   return { totalCapacity, totalCommitted, thresholdSp, thresholdPct: settings.releaseThresholdPct };
 }
 
+// Names for the Release dropdown: every unreleased release, always, plus only
+// the `previousCount` most recently released ones (by releaseDate, newest
+// first; undated released ones sort last). `previousCount` null/'all' keeps
+// the full history. `keepName` (the currently selected release) is never
+// dropped, so a live selection can't vanish from its own dropdown.
+function selectReleaseNames(versions, previousCount, keepName) {
+  const live = versions.filter(v => !v.archived);
+  if (previousCount == null || previousCount === 'all') return live.map(v => v.name);
+  const limit = Math.max(0, Number(previousCount) || 0);
+  const recentReleased = new Set(
+    live.filter(v => v.released)
+      .sort((a, b) => (a.releaseDate && b.releaseDate ? (a.releaseDate < b.releaseDate ? 1 : -1) : a.releaseDate ? -1 : b.releaseDate ? 1 : 0))
+      .slice(0, limit)
+      .map(v => v.name)
+  );
+  return live.filter(v => !v.released || recentReleased.has(v.name) || v.name === keepName).map(v => v.name);
+}
+
 // TRI Release Capacity gadget's "By space" data source — one bar per
 // configured space for a single release, matched across spaces by NAME
 // (Jira versions are per-project; there's no shared cross-project release
@@ -1376,7 +1394,7 @@ function rollupForVersion(rows, targetVersion, settings) {
 // per-space rule, so different bars can legitimately show different
 // release names in that mode.
 resolver.define('getReleaseCapacityRollup', async ({ payload }) => {
-  const { spaces, releaseName, todayISO } = payload ?? {};
+  const { spaces, releaseName, todayISO, previousReleaseCount } = payload ?? {};
   if (!Array.isArray(spaces) || spaces.length === 0) return { results: [], error: 'No spaces configured.' };
 
   const results = [];
@@ -1397,7 +1415,7 @@ resolver.define('getReleaseCapacityRollup', async ({ payload }) => {
       }
 
       const versions = await fetchProjectVersions(projectKey);
-      const releaseNames = versions.filter(v => !v.archived).map(v => v.name);
+      const releaseNames = selectReleaseNames(versions, previousReleaseCount, releaseName);
       const targetVersion = releaseName
         ? versions.find(v => v.name === releaseName)
         : pickAutoVersion(versions, todayISO);
