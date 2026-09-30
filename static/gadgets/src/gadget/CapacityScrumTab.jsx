@@ -84,6 +84,7 @@ export default function CapacityScrumTab({
       {releaseMappingEnabled && (
         <ReleasesSummaryTable
           rows={visibleRows}
+          allRows={rows}
           releaseOptions={releaseOptions}
           baseCapacitySp={baseCapacitySp}
           thresholdPct={releaseThresholdPct}

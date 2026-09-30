@@ -149,6 +149,7 @@ export default function CapacityKanbanTab({
       {releaseMappingEnabled && (
         <ReleasesSummaryTable
           rows={visibleRows}
+          allRows={rows}
           releaseOptions={releaseOptions}
           baseCapacitySp={baseCapacitySp}
           thresholdPct={releaseThresholdPct}

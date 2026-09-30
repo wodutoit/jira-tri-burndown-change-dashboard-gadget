@@ -147,14 +147,17 @@ export function ReleaseSelectCell({ releaseId, releaseOptions, onChange }) {
   );
 }
 
-// Rolls up whatever rows are currently visible in the Capacity table
-// (respects hideClosed/hideCompleted + closedLimit/completedLimit already
-// applied by the caller) into one row per mapped release. Rendered above
-// the Capacity table, only when Release Mapping is enabled.
-export function ReleasesSummaryTable({ rows, releaseOptions, baseCapacitySp, thresholdPct }) {
+// Rolls up mapped rows into one row per release. Which releases are listed is
+// driven by the currently visible rows (hideClosed/hideCompleted +
+// closedLimit/completedLimit already applied by the caller), but every figure
+// shown for a release is computed from ALL rows mapped to it, visible or not,
+// so hiding a sprint never changes a release's totals. Rendered above the
+// Capacity table, only when Release Mapping is enabled.
+export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, baseCapacitySp, thresholdPct }) {
+  const visibleReleaseIds = new Set(rows.filter(r => r.releaseId).map(r => r.releaseId));
   const groups = new Map();
-  for (const row of rows) {
-    if (!row.releaseId) continue;
+  for (const row of allRows) {
+    if (!row.releaseId || !visibleReleaseIds.has(row.releaseId)) continue;
     if (!groups.has(row.releaseId)) groups.set(row.releaseId, []);
     groups.get(row.releaseId).push(row);
   }
