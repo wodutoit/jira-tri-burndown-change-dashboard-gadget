@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { invoke, view } from '@forge/bridge';
 import { editStyles as S, Section } from './sprintConfigShared';
-import { statusStyle } from './gadgetUtils';
+import { statusStyle, portfolioBands } from './gadgetUtils';
 
 // jira:projectSettingsPage — toggles the "tri-capacity-planning" project
 // entity property that jira:projectPage's displayConditions.entityPropertyEqualTo
@@ -24,6 +24,50 @@ export default function TriCapacitySettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState(null);
+  // Portfolio Planning: candidate fields, the chosen field's options (preview
+  // only — allocations are edited per release on the Capacity tab), a field
+  // change awaiting inline confirmation, and the threshold inputs as typed
+  // (strings, so a half-typed value doesn't get clamped mid-keystroke).
+  const [portfolioFields, setPortfolioFields] = useState([]);
+  const [portfolioOptions, setPortfolioOptions] = useState([]);
+  const [optionsError, setOptionsError] = useState(null);
+  const [pendingField, setPendingField] = useState(null);
+  const [pf, setPf] = useState({ warn: '10', crit: '20', floor: '1' });
+  const [pfError, setPfError] = useState(null);
+
+  useEffect(() => {
+    if (!settings) return;
+    setPf({
+      warn: String(settings.portfolioWarnPct),
+      crit: String(settings.portfolioCriticalPct),
+      floor: String(settings.portfolioMinTolerancePp),
+    });
+  }, [settings?.portfolioWarnPct, settings?.portfolioCriticalPct, settings?.portfolioMinTolerancePp]);
+
+  const portfolioOn = !!settings?.portfolioPlanningEnabled;
+  const portfolioFieldId = settings?.portfolioFieldId || '';
+
+  useEffect(() => {
+    if (!portfolioOn || !projectKey) return;
+    let ignore = false;
+    invoke('getPortfolioFieldCandidates').then(res => {
+      if (!ignore) setPortfolioFields(res.fields ?? []);
+    }).catch(() => {});
+    return () => { ignore = true; };
+  }, [portfolioOn, projectKey]);
+
+  useEffect(() => {
+    setPortfolioOptions([]);
+    setOptionsError(null);
+    if (!portfolioOn || !projectKey || !portfolioFieldId) return;
+    let ignore = false;
+    invoke('getPortfolioFieldOptions', { projectKey, fieldId: portfolioFieldId }).then(res => {
+      if (ignore) return;
+      setPortfolioOptions(res.options ?? []);
+      setOptionsError(res.error ?? null);
+    }).catch(e => { if (!ignore) setOptionsError(String(e)); });
+    return () => { ignore = true; };
+  }, [portfolioOn, projectKey, portfolioFieldId]);
 
   useEffect(() => {
     view.theme.enable().catch(() => {});
@@ -70,8 +114,13 @@ export default function TriCapacitySettingsPage() {
     setSaved(false);
     try {
       const res = await invoke('setCapacitySettings', { projectKey, settings: next });
-      if (res.error) setError(res.error);
-      else { setSettings(res.settings); setSaved(true); }
+      if (res.error) {
+        setError(res.error);
+        // The optimistic update above is now wrong (e.g. the server refused to
+        // enable Portfolio Planning) — put back whatever is actually stored.
+        const current = await invoke('getCapacitySettings', { projectKey });
+        if (current.settings) setSettings(current.settings);
+      } else { setSettings(res.settings); setSaved(true); setError(null); }
     } finally {
       setSaving(false);
     }
@@ -108,6 +157,55 @@ export default function TriCapacitySettingsPage() {
     if (next.has(name)) next.delete(name); else next.add(name);
     saveSettings({ excludedDoneStatuses: [...next] });
   };
+
+  // Portfolio Planning gating: needs Release Mapping (allocations are per
+  // release) and a Scrum space. An already-enabled space can always be turned
+  // off, even if it has since stopped qualifying.
+  const portfolioBlockedReason = !settings.releaseMappingEnabled
+    ? 'Turn on Release Mapping first — portfolio allocations are set per release.'
+    : boardType === 'kanban'
+      ? 'Portfolio Planning is only available for Scrum spaces.'
+      : boardType !== 'scrum'
+        ? "This space's board type couldn't be detected, so Portfolio Planning can't be enabled yet."
+        : null;
+
+  const handleFieldChange = (next) => {
+    if (next === portfolioFieldId) return;
+    // First pick has nothing to lose; changing/clearing an existing choice
+    // orphans that space's saved allocations, so ask first.
+    if (portfolioFieldId) setPendingField(next);
+    else saveSettings({ portfolioFieldId: next });
+  };
+
+  const commitThresholds = () => {
+    const warn = Number(pf.warn);
+    const crit = Number(pf.crit);
+    const floor = Number(pf.floor);
+    if (![warn, crit, floor].every(Number.isFinite) || pf.warn === '' || pf.crit === '' || pf.floor === '') {
+      setPfError('Enter a number in every threshold field.');
+    } else if (warn < 0 || warn > 100 || crit < 0 || crit > 100) {
+      setPfError('Warn and critical must be between 0 and 100.');
+    } else if (floor < 0 || floor > 20) {
+      setPfError('Minimum tolerance must be between 0 and 20 percentage points.');
+    } else if (warn >= crit) {
+      setPfError('Warn must be lower than critical.');
+    } else {
+      setPfError(null);
+      if (warn !== settings.portfolioWarnPct || crit !== settings.portfolioCriticalPct || floor !== settings.portfolioMinTolerancePp) {
+        saveSettings({ portfolioWarnPct: warn, portfolioCriticalPct: crit, portfolioMinTolerancePp: floor });
+      }
+    }
+  };
+
+  const exampleBands = (() => {
+    const w = Number(pf.warn), c = Number(pf.crit), f = Number(pf.floor);
+    if (![w, c, f].every(Number.isFinite) || w >= c) return null;
+    const fmt = n => Math.round(n * 10) / 10;
+    return [20, 5].map(target => {
+      const b = portfolioBands(target, w, c, f);
+      return `${target}% target: green ${fmt(target - b.warnPp)}–${fmt(target + b.warnPp)}%, orange ${fmt(Math.max(0, target - b.criticalPp))}–${fmt(target + b.criticalPp)}%`;
+    });
+  })();
 
   return (
     <div style={S.wrap}>
@@ -259,6 +357,104 @@ export default function TriCapacitySettingsPage() {
             <div style={S.hint}>
               The percentage of a release's capacity that should be planned features, leaving the remainder for
               unplanned work, defects, etc.
+            </div>
+          </div>
+        )}
+      </Section>
+
+      <div style={S.divider} />
+
+      <Section title="Portfolio Planning">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: (portfolioBlockedReason && !portfolioOn) ? 'default' : 'pointer', opacity: (portfolioBlockedReason && !portfolioOn) ? 0.6 : 1 }}>
+          <input
+            type="checkbox"
+            checked={portfolioOn}
+            disabled={saving || (!!portfolioBlockedReason && !portfolioOn)}
+            onChange={e => saveSettings({ portfolioPlanningEnabled: e.target.checked })}
+          />
+          Enable Portfolio Planning
+        </label>
+        {portfolioBlockedReason && !portfolioOn && <div style={S.hint}>{portfolioBlockedReason}</div>}
+        <div style={S.hint}>
+          Lets you split each release's work across the categories of a select-list field (e.g. Infrastructure,
+          Features, Defects) with a target % per category, and compares the story points actually in the release's
+          sprints against those targets. Required for this space to appear in the portfolio dashboard gadget.
+          Turning it off hides the feature but keeps your allocations.
+        </div>
+        {portfolioOn && portfolioBlockedReason && (
+          <div style={{ ...S.hint, color: 'var(--over-text)' }}>{portfolioBlockedReason} Portfolio data for this space won't be available until that's resolved.</div>
+        )}
+
+        {portfolioOn && (
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Portfolio category field</div>
+              <select
+                value={pendingField != null ? pendingField : portfolioFieldId}
+                disabled={pendingField != null}
+                onChange={e => handleFieldChange(e.target.value)}
+                style={S.select}
+              >
+                <option value="">Select a field…</option>
+                {portfolioFieldId && !portfolioFields.some(f => f.id === portfolioFieldId) && (
+                  <option value={portfolioFieldId}>{portfolioFieldId}</option>
+                )}
+                {portfolioFields.map(f => <option key={f.id} value={f.id}>{f.name} ({f.id})</option>)}
+              </select>
+              {pendingField != null && (
+                <div style={{ ...S.hint, color: 'var(--text)', marginTop: 6 }}>
+                  Changing the field means this space's saved allocations stop applying (they're kept, and come back
+                  if you switch back to the original field). Change it?
+                  <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                    <button style={S.smallBtn} onClick={() => { const v = pendingField; setPendingField(null); saveSettings({ portfolioFieldId: v }); }}>Change field</button>
+                    <button style={S.smallBtn} onClick={() => setPendingField(null)}>Cancel</button>
+                  </div>
+                </div>
+              )}
+              <div style={S.hint}>
+                A single-select field (select list or radio buttons) whose options are your portfolio categories.
+                One field per space; every ticket in the release's sprints is bucketed by its value.
+              </div>
+              {portfolioFieldId && optionsError && <div style={{ ...S.hint, color: 'var(--over-text)' }}>{optionsError}</div>}
+              {portfolioFieldId && !optionsError && portfolioOptions.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                  {portfolioOptions.map(o => (
+                    <span key={o.id} style={{ ...S.chip, background: 'var(--surface-sunken)', color: 'var(--text-subtle)', textDecoration: o.disabled ? 'line-through' : 'none' }}>{o.name}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Allocation thresholds</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center', fontSize: 13 }}>
+                <span>
+                  Warn at ±{' '}
+                  <input type="number" min="0" max="100" value={pf.warn}
+                    onChange={e => setPf(p => ({ ...p, warn: e.target.value }))} onBlur={commitThresholds}
+                    style={{ ...S.select, width: 70 }} /> %
+                </span>
+                <span>
+                  Critical at ±{' '}
+                  <input type="number" min="0" max="100" value={pf.crit}
+                    onChange={e => setPf(p => ({ ...p, crit: e.target.value }))} onBlur={commitThresholds}
+                    style={{ ...S.select, width: 70 }} /> %
+                </span>
+                <span>
+                  Minimum tolerance{' '}
+                  <input type="number" min="0" max="20" step="0.5" value={pf.floor}
+                    onChange={e => setPf(p => ({ ...p, floor: e.target.value }))} onBlur={commitThresholds}
+                    style={{ ...S.select, width: 70 }} /> pts
+                </span>
+              </div>
+              {pfError && <div style={{ ...S.hint, color: 'var(--over-text)' }}>{pfError}</div>}
+              <div style={S.hint}>
+                Thresholds are relative to each category's own target: with a 20% target and Warn at ±10%, actual is
+                green from 18% to 22%, orange up to the Critical band, and red beyond it. The minimum tolerance is a
+                floor in percentage points so small targets don't get impossibly tight bands (0 turns it off). A
+                category with a 0% target — including Unassigned tickets — is red as soon as any work lands in it.
+              </div>
+              {exampleBands && <div style={S.hint}>Example: {exampleBands.join(' · ')}</div>}
             </div>
           </div>
         )}

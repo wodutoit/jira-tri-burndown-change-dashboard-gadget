@@ -33,3 +33,31 @@ export function classifyReleaseStatus(totalCommitted, totalCapacity, thresholdPc
   if (totalCommitted > totalCapacity * (thresholdPct / 100)) return { tier: 'overThreshold' };
   return { tier: 'within' };
 }
+
+// Portfolio Planning tolerance bands, in percentage points around a category's
+// target share. Thresholds are RELATIVE to the target (a 20% target with
+// warnPct=10 is green at 18-22%), with `minTolerancePp` as a floor so small
+// targets don't get impossibly tight bands: warn band = max(target*warn%,
+// floor), critical band = max(target*critical%, 2*floor). A target of 0 has no
+// band at all (any actual above 0 is out of range) — see classifyPortfolioShare.
+export function portfolioBands(targetPct, warnPct, criticalPct, minTolerancePp) {
+  const floor = Math.max(0, minTolerancePp || 0);
+  return {
+    warnPp: Math.max(targetPct * (warnPct / 100), floor),
+    criticalPp: Math.max(targetPct * (criticalPct / 100), 2 * floor),
+  };
+}
+
+// 'ok' | 'warn' | 'critical' for one category's actual share vs its target
+// (both in percent). Target 0 -> any actual > 0 is critical, exactly 0 is ok;
+// this is also how Unassigned (always target 0) is always red.
+export function classifyPortfolioShare(actualPct, targetPct, warnPct, criticalPct, minTolerancePp) {
+  if (!(targetPct > 0)) return actualPct > 0 ? 'critical' : 'ok';
+  const { warnPp, criticalPp } = portfolioBands(targetPct, warnPct, criticalPct, minTolerancePp);
+  const dev = Math.abs(actualPct - targetPct);
+  // Epsilon so a share sitting exactly on a band edge isn't tipped over by
+  // floating-point noise (e.g. 22.000000000000004 vs a 22 edge).
+  if (dev <= warnPp + 1e-9) return 'ok';
+  if (dev <= criticalPp + 1e-9) return 'warn';
+  return 'critical';
+}

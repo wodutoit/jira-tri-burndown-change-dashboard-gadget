@@ -140,6 +140,75 @@ resolver.define('getNumericFields', async () => {
   }
 });
 
+// ── Portfolio Planning: category field + its options ─────────────────────────
+
+// Single-select style custom fields only (select list, radio buttons) — a
+// multi-select/cascading/label field can't be a one-category-per-ticket bucket.
+resolver.define('getPortfolioFieldCandidates', async () => {
+  try {
+    const res = await asUser().requestJira(
+      route`/rest/api/3/field`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!res.ok) return { fields: [], error: `Jira ${res.status}` };
+    const all = await res.json();
+    const fields = all
+      .filter(f => f.custom && f.schema?.type === 'option'
+        && /:(select|radiobuttons)$/.test(f.schema.custom || ''))
+      .map(f => ({ id: f.id, name: f.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return { fields };
+  } catch (e) {
+    return { fields: [], error: e.message };
+  }
+});
+
+// Options of the chosen field as this space sees them, read from the issue
+// create-metadata (allowedValues) rather than the field-context options API,
+// which needs Jira admin. That means the viewer needs Create Issue permission
+// in the space; without it we say so instead of guessing. Options are unioned
+// across the space's issue types (a field can have different contexts per type)
+// and keyed by option id, which is what stays stable across renames.
+resolver.define('getPortfolioFieldOptions', async ({ payload }) => {
+  const { projectKey, fieldId } = payload ?? {};
+  if (!projectKey || !fieldId) return { options: [], error: 'Missing project key or field.' };
+  try {
+    const typesRes = await asUser().requestJira(
+      route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes?maxResults=100`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!typesRes.ok) {
+      return { options: [], error: `Couldn't read issue types (Jira ${typesRes.status}). Listing options needs Create Issue permission in this space.` };
+    }
+    const typesBody = await typesRes.json();
+    const issueTypes = typesBody.issueTypes || typesBody.values || [];
+
+    const byId = new Map();
+    let fieldSeen = false;
+    for (const t of issueTypes) {
+      const metaRes = await asUser().requestJira(
+        route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes/${t.id}?maxResults=200`,
+        { headers: { Accept: 'application/json' } }
+      );
+      if (!metaRes.ok) continue;
+      const metaBody = await metaRes.json();
+      const field = (metaBody.fields || metaBody.values || []).find(f => f.fieldId === fieldId || f.key === fieldId);
+      if (!field) continue;
+      fieldSeen = true;
+      for (const o of (field.allowedValues || [])) {
+        if (o.id == null || byId.has(String(o.id))) continue;
+        byId.set(String(o.id), { id: String(o.id), name: o.value ?? o.name ?? String(o.id), disabled: !!o.disabled });
+      }
+    }
+    if (!fieldSeen) {
+      return { options: [], error: 'This field isn\'t on any of this space\'s create screens, so its options can\'t be listed.' };
+    }
+    return { options: [...byId.values()] };
+  } catch (e) {
+    return { options: [], error: e.message };
+  }
+});
+
 // ── Edit-mode: statuses for a project ────────────────────────────────────────
 
 async function fetchProjectStatuses(projectKey) {
@@ -1241,8 +1310,35 @@ const CAPACITY_SETTINGS_DEFAULTS = {
   excludedDoneStatuses: [],
   releaseMappingEnabled: false,
   releaseThresholdPct: 70,
+  // Portfolio Planning (Scrum only, requires Release Mapping). Warn/critical
+  // are relative to a category's own target (a 20% target with warn=10 is
+  // green at 18-22%); minTolerancePp is a floor in percentage points so small
+  // targets don't get impossibly tight bands (0 turns the floor off).
+  portfolioPlanningEnabled: false,
+  portfolioFieldId: '',
+  portfolioWarnPct: 10,
+  portfolioCriticalPct: 20,
+  portfolioMinTolerancePp: 1,
 };
 const CAPACITY_BOARD_TYPE_OVERRIDE_OPTIONS = ['auto', 'scrum', 'kanban'];
+
+// Same finite-number-or-default coercion for settings where 0 is a valid
+// value (the `|| default` idiom used above would silently turn 0 into the default).
+function finiteOr(v, fallback) {
+  if (v === '' || v == null) return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// Effective board type for a space: the Capacity "Board Type" override when
+// set, otherwise the auto-detected type (same precedence getCapacityBoardInfo uses).
+async function getEffectiveBoardType(projectKey, settings) {
+  const override = settings?.boardTypeOverride;
+  if (override === 'scrum' || override === 'kanban') return { boardType: override };
+  const { board, error } = await getBoardForProject(projectKey);
+  if (error) return { error };
+  return { boardType: board.type === 'kanban' ? 'kanban' : 'scrum' };
+}
 
 // Extracted so TRI Velocity's getVelocityData (below) can look up a space's
 // Base Capacity without duplicating the kvs-merge-with-defaults logic.
@@ -1281,7 +1377,32 @@ resolver.define('setCapacitySettings', async ({ payload }) => {
       : [],
     releaseMappingEnabled: !!settings.releaseMappingEnabled,
     releaseThresholdPct: Math.min(100, Math.max(0, Number(settings.releaseThresholdPct) || 70)),
+    portfolioPlanningEnabled: !!settings.portfolioPlanningEnabled,
+    portfolioFieldId: typeof settings.portfolioFieldId === 'string' ? settings.portfolioFieldId.trim() : '',
+    portfolioWarnPct: Math.min(100, Math.max(0, finiteOr(settings.portfolioWarnPct, CAPACITY_SETTINGS_DEFAULTS.portfolioWarnPct))),
+    portfolioCriticalPct: Math.min(100, Math.max(0, finiteOr(settings.portfolioCriticalPct, CAPACITY_SETTINGS_DEFAULTS.portfolioCriticalPct))),
+    portfolioMinTolerancePp: Math.min(20, Math.max(0, finiteOr(settings.portfolioMinTolerancePp, CAPACITY_SETTINGS_DEFAULTS.portfolioMinTolerancePp))),
   };
+
+  if (merged.portfolioWarnPct >= merged.portfolioCriticalPct) {
+    return { error: 'Portfolio warn threshold must be lower than the critical threshold.' };
+  }
+  // Portfolio Planning is per-release, so it can't outlive Release Mapping.
+  // The stored allocations/field choice are kept (just inactive) so turning
+  // either back on restores them.
+  if (!merged.releaseMappingEnabled) merged.portfolioPlanningEnabled = false;
+  // Scrum only — checked server-side too, since the UI can be stale or bypassed.
+  // Only enforced when the flag is being newly turned on, so an already-enabled
+  // space isn't blocked from saving unrelated settings by a transient board lookup failure.
+  if (merged.portfolioPlanningEnabled) {
+    let wasEnabled = false;
+    try { wasEnabled = (await kvs.get(`capacity-settings:${projectKey}`))?.portfolioPlanningEnabled === true; } catch (_) {}
+    if (!wasEnabled) {
+      const { boardType, error: btErr } = await getEffectiveBoardType(projectKey, merged);
+      if (btErr) return { error: `Couldn't confirm this is a Scrum space: ${btErr}` };
+      if (boardType !== 'scrum') return { error: 'Portfolio Planning is only available for Scrum spaces.' };
+    }
+  }
   try {
     await kvs.set(`capacity-settings:${projectKey}`, merged);
     return { ok: true, settings: merged };
