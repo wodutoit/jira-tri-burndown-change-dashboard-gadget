@@ -81,6 +81,12 @@ export default function TriCapacityPage() {
             releaseMappingEnabled={settings.releaseMappingEnabled}
             releaseThresholdPct={settings.releaseThresholdPct}
             releaseOptions={releaseOptions}
+            portfolioEnabled={!!settings.portfolioPlanningEnabled && !!settings.portfolioFieldId}
+            portfolioThresholds={{
+              warnPct: settings.portfolioWarnPct,
+              criticalPct: settings.portfolioCriticalPct,
+              minTolerancePp: settings.portfolioMinTolerancePp,
+            }}
           />
         )
       )}

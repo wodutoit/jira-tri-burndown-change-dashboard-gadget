@@ -4,12 +4,16 @@ import { editStyles as S } from './sprintConfigShared';
 import { useCapacityRows } from './useCapacityRows';
 import { CapacityTableRow, StatusChip, HideClosedToggle, fmtDate, ReleaseSelectCell, ReleasesSummaryTable } from './CapacityTableShared';
 import ScrumSprintEditDialog from './ScrumSprintEditDialog';
+import PortfolioDialog from './PortfolioDialog';
+import { usePortfolio } from './usePortfolio';
+import { buildPortfolioRows } from './portfolioModel';
 
 const CLOSED_LIMIT_OPTIONS = [3, 5, 10, 15, 'all'];
 
 export default function CapacityScrumTab({
   projectKey, boardId, spFieldId, graceWindowHours, baseCapacitySp,
   releaseMappingEnabled, releaseThresholdPct, releaseOptions,
+  portfolioEnabled = false, portfolioThresholds = null,
 }) {
   const [closedLimit, setClosedLimit] = useState(10);
 
@@ -32,6 +36,33 @@ export default function CapacityScrumTab({
   const [editError, setEditError] = useState(null);
 
   const visibleRows = rows.filter(s => s.state !== 'closed' || !hideClosed);
+
+  // Portfolio Planning (opt-in per space; needs Release Mapping): actuals are
+  // only fetched for releases that have a visible sprint, matching which
+  // releases the summary table lists.
+  const portfolioOn = portfolioEnabled && releaseMappingEnabled && !!portfolioThresholds;
+  const visibleReleaseIds = visibleRows.map(s => s.releaseId).filter(Boolean);
+  const portfolio = usePortfolio({ projectKey, enabled: portfolioOn, releaseIds: visibleReleaseIds });
+  const [portfolioReleaseId, setPortfolioReleaseId] = useState(null);
+  const [portfolioSaving, setPortfolioSaving] = useState(false);
+  const [portfolioError, setPortfolioError] = useState(null);
+
+  const handleSavePortfolio = async ({ alloc, names, expectedUpdatedAt }) => {
+    setPortfolioSaving(true);
+    setPortfolioError(null);
+    try {
+      const res = await portfolio.save(portfolioReleaseId, alloc, names, expectedUpdatedAt);
+      if (res.ok) { setPortfolioReleaseId(null); return; }
+      // On a conflict the stored allocation was reloaded, which remounts the
+      // dialog on their version; the message tells the editor to re-apply.
+      setPortfolioError(res.error || 'Save failed.');
+    } finally {
+      setPortfolioSaving(false);
+    }
+  };
+
+  const portfolioDialogAllocation = portfolioReleaseId ? (portfolio.allocations[portfolioReleaseId] ?? null) : null;
+  const portfolioDialogRelease = portfolioReleaseId ? releaseOptions.find(v => v.id === portfolioReleaseId) : null;
 
   const handleSaveEdit = async ({ goal, startDate, endDate }) => {
     setEditSaving(true);
@@ -88,6 +119,16 @@ export default function CapacityScrumTab({
           releaseOptions={releaseOptions}
           baseCapacitySp={baseCapacitySp}
           thresholdPct={releaseThresholdPct}
+          portfolio={portfolioOn ? {
+            thresholds: portfolioThresholds,
+            allocations: portfolio.allocations,
+            actuals: portfolio.actuals,
+            options: portfolio.options,
+            optionsLoaded: portfolio.optionsLoaded,
+            actualsLoading: portfolio.actualsLoading,
+            error: portfolio.error,
+            onOpen: (releaseId) => { setPortfolioError(null); setPortfolioReleaseId(releaseId); },
+          } : null}
         />
       )}
 
@@ -146,6 +187,29 @@ export default function CapacityScrumTab({
           error={editError}
           onSave={handleSaveEdit}
           onCancel={() => setEditingSprint(null)}
+        />
+      )}
+
+      {portfolioOn && portfolioReleaseId && (
+        <PortfolioDialog
+          // Remounts on a different release or when the stored version changes
+          // (e.g. after a conflict reload) so inputs and loadedUpdatedAt stay in step.
+          key={`${portfolioReleaseId}:${portfolioDialogAllocation?.updatedAt ?? 'none'}`}
+          releaseName={portfolioDialogRelease?.name ?? '(deleted release)'}
+          model={buildPortfolioRows({
+            options: portfolio.options,
+            optionsLoaded: portfolio.optionsLoaded,
+            allocation: portfolioDialogAllocation,
+            actuals: portfolio.actuals[portfolioReleaseId] ?? null,
+            historical: !!portfolioDialogRelease?.released,
+            thresholds: portfolioThresholds,
+          })}
+          loadedUpdatedAt={portfolioDialogAllocation?.updatedAt ?? null}
+          saving={portfolioSaving}
+          error={portfolioError}
+          optionsError={portfolio.optionsError}
+          onSave={handleSavePortfolio}
+          onCancel={() => setPortfolioReleaseId(null)}
         />
       )}
     </div>

@@ -1,6 +1,6 @@
 # Portfolio Planning & Distribution — implementation plan
 
-Status: **in progress** — step 1 (space settings) implemented; steps 2–6 pending.
+Status: **in progress** — steps 1–5 (settings, allocation model, actuals, Capacity page UI, dashboard gadget) implemented; step 6 (release prep) pending.
 Stage: POC on a test Jira site. Not yet reviewed against DMSi standards (see "Before production").
 
 Adds per-release portfolio allocation (a target % per category of a select-list field), a comparison of
@@ -19,7 +19,7 @@ visualise it.
 | Minimum tolerance | Floor in percentage points (default 1, 0 = off). warn band = max(target × warn%, floor); critical band = max(target × critical%, 2 × floor). |
 | Target of 0% | No band: any actual > 0 is critical, exactly 0 is ok. |
 | Allocation validation | Each 0–100 (one decimal), total ≤ 100. Remainder shown as "Unallocated". Enforced client- and server-side. |
-| Edit rights | Anyone who can open the Capacity page (POC only — see "Before production"). |
+| Edit rights | Anyone who can open the space's Capacity page — decided: governed by Jira access control (anyone with access to the space can already change its tickets). |
 | Total target (gadget) | Weighted by each space's capacity for the release (same capacity figure the release rollups use). Spaces with no allocation for that release are left out of the weights and flagged. |
 | Charts | Donut with a target ring (default); bullet bars as an option. |
 
@@ -28,8 +28,11 @@ visualise it.
 - Settings (`capacity-settings:<project>`, KVS): `portfolioPlanningEnabled`, `portfolioFieldId`,
   `portfolioWarnPct`, `portfolioCriticalPct`, `portfolioMinTolerancePp`.
 - Allocations (`portfolio-alloc:<project>`, KVS):
-  `{ fieldId, releases: { [versionId]: { alloc: { [optionId]: pct }, names: { [optionId]: name }, updatedAt } } }`.
-  `fieldId` is stored so a field change orphans (not deletes) old allocations.
+  `{ fields: { [fieldId]: { releases: { [versionId]: { alloc: { [optionId]: pct }, names: { [optionId]: name }, updatedAt } } } } }`.
+  Bucketed by field so a field change never destroys the old field's allocations — they stop being read
+  and return if the field is switched back. Writes carry `expectedUpdatedAt`; a mismatch returns a
+  conflict instead of overwriting someone else's edit of the same release (different releases in the
+  same space can still race at document level — accepted for now, same as `capacity-rows`).
 - Actuals are never stored — computed from live issues and cached briefly.
 - Everything is keyed by Jira **option id** (stable across renames). Names are only used to merge
   categories across spaces, since each space has its own field and option ids.
@@ -81,13 +84,28 @@ option handling above.
 
 1. **Settings** ✅ per-space toggle (Scrum + Release Mapping gated, server-enforced), field picker, option
    discovery, relative thresholds + minimum tolerance with validation.
-2. Allocation model: get/set resolvers, shared validation, field-id guard.
-3. Actuals resolver (Scrum only), dedupe, cache, deviation logic (`classifyPortfolioShare` already in
-   `gadgetUtils.js`).
-4. Capacity page: popup, allocation bar, Unassigned pill, tooltips.
-5. Gadget: both modes, both chart styles, capacity-weighted Total target, Edit screen, `portfolioFilter` in
-   `getCapacityEnabledProjects` (enabled + field set + Scrum), manifest module (needs
-   `forge install --upgrade`).
+2. ✅ Allocation model: `getPortfolioAllocations` / `setPortfolioAllocation` resolvers, server-side
+   validation in `src/portfolio.js` (unit tests: `npm test`), field-bucketed storage, conflict check.
+   Option ids must be numeric (Jira option ids are); the client popup (step 4) repeats the same rules for
+   feedback but the server is the authority.
+3. ✅ Actuals: `getPortfolioActuals` resolver (Scrum only, one search per release, cached) and
+   `aggregateActuals` in `src/portfolio.js` (unit tested), plus deviation logic (`classifyPortfolioShare`
+   in `gadgetUtils.js`). Counting rules: deduped by issue key; **a ticket with no estimate counts as 1 SP**
+   (an explicit 0 stays 0); blank-estimate subtasks count 0 (estimated subtasks count); no category →
+   Unassigned. Epics get no rollup: an Epic in a sprint that has child issues is ignored (its children are
+   counted directly); an Epic with no children counts with its own estimate like any ticket.
+   Results include `unestimatedCount` so the UI can say "N tickets counted as 1 SP".
+4. ✅ Capacity page: `PortfolioDialog` (allocation editor, new/removed-option handling, conflict-safe save),
+   `PortfolioBar` (allocation bar under the Status chip, Unassigned pill, native tooltips, hatched red
+   segments), `usePortfolio` hook, and `portfolioModel.js` (pure row/status model, unit tested). Saved
+   `names` now snapshot every option known at save time so "new option" can be told apart from "left at 0%".
+5. ✅ Gadget **TRI Portfolio Distribution** (`sprint-tri-portfolio-distribution-gadget`): both modes
+   (`getPortfolioReleaseDistribution` / `getPortfolioRoadmapDistribution`), donut-with-target-ring and bullet
+   bars (`PortfolioChart.jsx`), capacity-weighted Total (`mergeSpaceDistributions`, unit tested), Edit screen,
+   `portfolioFilter` in `getCapacityEnabledProjects` (Portfolio on + field set; callers add
+   `boardTypeFilter: 'scrum'`). New manifest module — needs `forge install --upgrade`. Edit rights stay
+   governed by Jira access: anyone who can open the space's Capacity page can set allocations.
+   Total thresholds = the most lenient of the contributing spaces' thresholds.
 6. Release prep: `PRIVACY.md` ("What the app stores"), `USAGE.md`, Marketplace checklist, gadget
    description/icon/screenshots, version bump (1.7.0), build + deploy.
 
@@ -105,7 +123,7 @@ tested without Jira; the repo has no test runner yet (proposal: Vitest for just 
 
 ## Before production
 
-- Edit rights currently = anyone who can open the Capacity page. Decide on a permission gate, and run the
+- Edit rights = anyone who can open the space's Capacity page (decided: governed by Jira access control). If that changes, run the
   DMSi standards lookup for authorization/access control (Tier 2 review) before this leaves POC.
 - Update `PRIVACY.md` (new KVS key, new field read) and re-check `.claude/MARKETPLACE-APPROVAL-GUIDELINES.md`
   (gadget description must match behaviour; screenshots/icon).

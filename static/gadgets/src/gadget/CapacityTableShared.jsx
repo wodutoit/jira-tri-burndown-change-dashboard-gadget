@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { editStyles as S } from './sprintConfigShared';
 import { statusStyle, classifyReleaseStatus } from './gadgetUtils';
+import { buildPortfolioRows } from './portfolioModel';
+import PortfolioBar from './PortfolioBar';
 
 // Future/Active/Completed(Closed) — reuses the same category color tokens
 // gadgetUtils' statusStyle already maps for Jira's own new/indeterminate/done
@@ -153,7 +155,11 @@ export function ReleaseSelectCell({ releaseId, releaseOptions, onChange }) {
 // shown for a release is computed from ALL rows mapped to it, visible or not,
 // so hiding a sprint never changes a release's totals. Rendered above the
 // Capacity table, only when Release Mapping is enabled.
-export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, baseCapacitySp, thresholdPct }) {
+//
+// `portfolio` (optional, Scrum + Portfolio Planning only) adds an allocation bar
+// and Portfolio button under each release's Status chip:
+//   { thresholds, allocations, actuals, options, optionsLoaded, actualsLoading, error, onOpen(releaseId) }
+export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, baseCapacitySp, thresholdPct, portfolio = null }) {
   const visibleReleaseIds = new Set(rows.filter(r => r.releaseId).map(r => r.releaseId));
   const groups = new Map();
   for (const row of allRows) {
@@ -218,7 +224,14 @@ export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, bas
           <tr><td style={S.td} colSpan={7}>No releases mapped yet.</td></tr>
         ) : summaries.map(s => (
           <tr key={s.releaseId} style={S.row}>
-            <td style={S.td}>{s.name}</td>
+            <td style={S.td}>
+              <div>{s.name}</div>
+              {portfolio && (
+                <button onClick={() => portfolio.onOpen(s.releaseId)} style={{ ...S.smallBtn, marginTop: 6 }}>
+                  {portfolio.allocations[s.releaseId] ? 'Portfolio' : 'Set portfolio'}
+                </button>
+              )}
+            </td>
             <td style={S.td}>{s.sprintCount}</td>
             <td style={S.td}>{Math.round(s.totalCapacity * 10) / 10}</td>
             <td style={S.td}>{Math.round(s.thresholdCapacity * 10) / 10}</td>
@@ -226,6 +239,20 @@ export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, bas
             <td style={S.td}>{Math.round(s.avgVelocity * 10) / 10}</td>
             <td style={S.td}>
               <span style={{ ...S.chip, background: s.status.bg, color: s.status.text }}>{s.status.label}</span>
+              {portfolio && (
+                <PortfolioBar
+                  model={buildPortfolioRows({
+                    options: portfolio.options,
+                    optionsLoaded: portfolio.optionsLoaded,
+                    allocation: portfolio.allocations[s.releaseId] ?? null,
+                    actuals: portfolio.actuals[s.releaseId] ?? null,
+                    historical: !!findRelease(s.releaseId, releaseOptions)?.released,
+                    thresholds: portfolio.thresholds,
+                  })}
+                  loading={portfolio.actualsLoading && !portfolio.actuals[s.releaseId]}
+                  error={portfolio.error}
+                />
+              )}
             </td>
           </tr>
         ))}

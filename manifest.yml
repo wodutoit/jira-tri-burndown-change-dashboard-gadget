@@ -90,6 +90,21 @@ modules:
       edit:
         resource: main
 
+    - key: sprint-tri-portfolio-distribution-gadget
+      title: TRI Portfolio Distribution
+      description: How a release's story points are split across your portfolio
+        categories, against the target allocation set on each space's Capacity
+        page. By release shows a chart per space plus a combined Total; by
+        space shows a chart per release. Donut with a target ring or bullet
+        bars, flagged green, orange or red by how far each category is from
+        target. Only Scrum spaces with Portfolio Planning enabled can be added.
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v4/static/gadgets/public/icons/tri-velocity.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
     - key: sprint-tri-kanban-burnup-gadget
       title: TRI Kanban Burnup
       description: Cumulative burn-up for a Kanban iteration — Target,

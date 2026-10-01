@@ -2,6 +2,7 @@ const Resolver = require('@forge/resolver').default;
 const { route, asUser } = require('@forge/api');
 const { kvs } = require('@forge/kvs');
 const crypto = require('crypto');
+const { validateAllocation, aggregateActuals, mergeSpaceDistributions } = require('./portfolio');
 
 const resolver = new Resolver();
 
@@ -1227,7 +1228,7 @@ resolver.define('setCapacityPlanningEnabled', async ({ payload }) => {
 // extra property-check request per project. Bounded and one-off (Edit mode
 // only), not a hot path.
 resolver.define('getCapacityEnabledProjects', async ({ payload }) => {
-  const { boardTypeFilter, releaseMappingFilter } = payload ?? {};
+  const { boardTypeFilter, releaseMappingFilter, portfolioFilter } = payload ?? {};
   try {
     const res = await asUser().requestJira(
       route`/rest/api/3/project/search?maxResults=100&orderBy=name`,
@@ -1276,6 +1277,13 @@ resolver.define('getCapacityEnabledProjects', async ({ payload }) => {
     if (releaseMappingFilter) {
       const settingsList = await Promise.all(enabled.map(p => kvs.get(`capacity-settings:${p.key}`)));
       enabled = enabled.filter((_, i) => settingsList[i]?.releaseMappingEnabled === true);
+    }
+
+    // TRI Portfolio Distribution's space picker: Portfolio Planning on AND a
+    // category field chosen (callers also pass boardTypeFilter: 'scrum').
+    if (portfolioFilter) {
+      const settingsList = await Promise.all(enabled.map(p => kvs.get(`capacity-settings:${p.key}`)));
+      enabled = enabled.filter((_, i) => settingsList[i]?.portfolioPlanningEnabled === true && !!settingsList[i]?.portfolioFieldId);
     }
 
     return { projects: enabled };
@@ -1408,6 +1416,342 @@ resolver.define('setCapacitySettings', async ({ payload }) => {
     return { ok: true, settings: merged };
   } catch (e) {
     return { error: e.message };
+  }
+});
+
+// ── Portfolio Planning: per-release allocations ──────────────────────────────
+// Stored per space in kvs as
+//   portfolio-alloc:<project> = { fields: { [fieldId]: { releases: { [versionId]: { alloc, names, updatedAt } } } } }
+// Bucketed BY FIELD so changing a space's portfolio field never destroys the
+// old field's allocations — they just stop being read, and come back if the
+// field is switched back. alloc is { [optionId]: percent }; names is a
+// display-name snapshot so a since-deleted option can still be labelled.
+
+async function readPortfolioDoc(projectKey) {
+  const doc = await kvs.get(`portfolio-alloc:${projectKey}`);
+  return doc && typeof doc === 'object' && doc.fields && typeof doc.fields === 'object' ? doc : { fields: {} };
+}
+
+// Shared gate for every allocation read/write: the space must have Portfolio
+// Planning on and a field chosen. (Scrum-only is enforced when enabling in
+// setCapacitySettings, and re-checked on writes below.)
+async function getPortfolioSettings(projectKey) {
+  const settings = await getCapacitySettingsFor(projectKey);
+  if (!settings.portfolioPlanningEnabled) return { error: 'Portfolio Planning is not enabled for this space.' };
+  if (!settings.portfolioFieldId) return { error: 'No portfolio category field is selected for this space.' };
+  return { settings };
+}
+
+// All of a space's allocations for its CURRENT portfolio field, keyed by
+// version id — one call feeds every row's allocation bar in the summary table.
+resolver.define('getPortfolioAllocations', async ({ payload }) => {
+  const { projectKey } = payload ?? {};
+  if (!projectKey) return { releases: {}, error: 'No project key.' };
+  try {
+    const { settings, error } = await getPortfolioSettings(projectKey);
+    if (error) return { releases: {}, error };
+    const doc = await readPortfolioDoc(projectKey);
+    return {
+      fieldId: settings.portfolioFieldId,
+      releases: doc.fields[settings.portfolioFieldId]?.releases ?? {},
+    };
+  } catch (e) {
+    return { releases: {}, error: e.message };
+  }
+});
+
+// Saves (or, with an empty allocation, clears) one release's allocation.
+// `expectedUpdatedAt` is the updatedAt the editor loaded (null if the release
+// had none): if someone else saved that release in between, this is refused
+// instead of silently overwriting their change.
+resolver.define('setPortfolioAllocation', async ({ payload }) => {
+  const { projectKey, releaseId, alloc, names, expectedUpdatedAt } = payload ?? {};
+  if (!projectKey || !releaseId) return { error: 'Missing project key or release.' };
+  try {
+    const { settings, error } = await getPortfolioSettings(projectKey);
+    if (error) return { error };
+
+    const { boardType, error: btErr } = await getEffectiveBoardType(projectKey, settings);
+    if (btErr) return { error: `Couldn't confirm this is a Scrum space: ${btErr}` };
+    if (boardType !== 'scrum') return { error: 'Portfolio Planning is only available for Scrum spaces.' };
+
+    const checked = validateAllocation(alloc, names);
+    if (checked.error) return { error: checked.error };
+
+    // Only real versions of this space can carry an allocation — keeps stray
+    // ids out of storage and catches a release deleted since the page loaded.
+    const versions = await fetchProjectVersions(projectKey);
+    if (!versions.some(v => v.id === String(releaseId))) return { error: 'That release no longer exists in this space.' };
+
+    const fieldId = settings.portfolioFieldId;
+    const doc = await readPortfolioDoc(projectKey);
+    const releases = { ...(doc.fields[fieldId]?.releases ?? {}) };
+    const current = releases[releaseId] ?? null;
+
+    if (expectedUpdatedAt !== undefined && (current?.updatedAt ?? null) !== (expectedUpdatedAt ?? null)) {
+      return { conflict: true, current, error: 'This release\'s allocation was changed by someone else. Reload to see their changes.' };
+    }
+
+    let saved = null;
+    if (Object.keys(checked.alloc).length === 0) {
+      delete releases[releaseId];
+    } else {
+      saved = { alloc: checked.alloc, names: checked.names, updatedAt: new Date().toISOString() };
+      releases[releaseId] = saved;
+    }
+    doc.fields[fieldId] = { releases };
+    await kvs.set(`portfolio-alloc:${projectKey}`, doc);
+    return { ok: true, allocation: saved, total: checked.total };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// ── Portfolio Planning: actuals (story points per category in a release) ─────
+// Counts every ticket currently in the release's mapped sprints, deduped by
+// issue key, current story points (aggregateActuals in portfolio.js has the
+// full counting rules, including the 1-SP default for unestimated tickets).
+
+// A release with only closed sprints is effectively frozen, so it can be cached
+// far longer than one with an active/future sprint whose tickets still move.
+const PORTFOLIO_CLOSED_CACHE_TTL_MS = 60 * 60 * 1000;
+
+// Every sprint on the space's board (same fetch caps as the Capacity table)
+// tagged with its state and the release it's mapped to.
+async function fetchMappedScrumSprints(board, projectKey) {
+  const [active, future, closed] = await Promise.all([
+    fetchSprintsByState(board.id, 'active', 10),
+    fetchSprintsByState(board.id, 'future', 20),
+    fetchSprintsByState(board.id, 'closed', 'all'),
+  ]);
+  const overrides = await getCapacityRows(projectKey);
+  const tag = (list, state) => list.map(s => ({
+    id: s.id, state, releaseId: overrides[s.id]?.releaseId ?? null, capacitySp: overrides[s.id]?.capacitySp ?? null,
+  }));
+  return [...tag(active, 'active'), ...tag(future, 'future'), ...tag(closed, 'closed')];
+}
+
+// Gate + fetch shared by every Portfolio read (Capacity page and gadget): the
+// space must have Portfolio Planning on with a field and a Story Points field,
+// and be a Scrum space. Returns the settings and the tagged sprint list.
+async function getScrumPortfolioContext(projectKey) {
+  const { settings, error } = await getPortfolioSettings(projectKey);
+  if (error) return { error };
+  if (!settings.spFieldId) return { error: 'No Story Points field is configured for this space.' };
+
+  const { board, error: boardErr } = await getBoardForProject(projectKey);
+  if (boardErr) return { error: boardErr };
+  const override = settings.boardTypeOverride;
+  const boardType = override === 'scrum' || override === 'kanban' ? override : board.type;
+  if (boardType !== 'scrum') return { error: 'Portfolio Planning is only available for Scrum spaces.' };
+
+  return { settings, sprints: await fetchMappedScrumSprints(board, projectKey) };
+}
+
+function groupSprintsByRelease(sprints) {
+  const byRelease = new Map();
+  for (const s of sprints) {
+    if (!s.releaseId) continue;
+    if (!byRelease.has(s.releaseId)) byRelease.set(s.releaseId, []);
+    byRelease.get(s.releaseId).push(s);
+  }
+  return byRelease;
+}
+
+// Actuals for one release from the sprints mapped to it (cached; see TTL notes
+// above). A release with no mapped sprints is all zeros.
+async function computeReleaseActuals(projectKey, settings, releaseId, group, forceRefresh) {
+  const { spFieldId, portfolioFieldId: fieldId } = settings;
+  if (group.length === 0) {
+    return { ...aggregateActuals([], { spFieldId, fieldId }), sprintCount: 0, computedAt: null };
+  }
+  const sprintKey = group.map(s => s.id).sort((a, b) => a - b).join(',');
+  const cacheKey = `portfolio-actuals:${projectKey}:${fieldId}:${spFieldId}:${releaseId}`;
+  const ttl = group.every(s => s.state === 'closed') ? PORTFOLIO_CLOSED_CACHE_TTL_MS : ACTIVE_CACHE_TTL_MS;
+
+  if (!forceRefresh) {
+    try {
+      const cached = await kvs.get(cacheKey);
+      // The sprint set is part of validity: remapping a sprint to/from this
+      // release must show up immediately, not after the TTL.
+      if (cached && cached.sprintKey === sprintKey && (Date.now() - cached.cachedAt) < ttl) return cached.data;
+    } catch (_) {}
+  }
+
+  const issues = await fetchPortfolioIssues(projectKey, group.map(s => s.id), spFieldId, fieldId);
+  const skipKeys = await findEpicsWithChildren(issues);
+  const data = {
+    ...aggregateActuals(issues, { spFieldId, fieldId, skipKeys }),
+    sprintCount: group.length,
+    computedAt: new Date().toISOString(),
+  };
+  try { await kvs.set(cacheKey, { sprintKey, cachedAt: Date.now(), data }); } catch (_) {}
+  return data;
+}
+
+async function fetchPortfolioIssues(projectKey, sprintIds, spFieldId, fieldId) {
+  // These go into JQL / field lists, so they're validated rather than escaped.
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(projectKey)) throw new Error('Invalid project key.');
+  const ids = sprintIds.map(Number);
+  if (!ids.length || !ids.every(Number.isInteger)) throw new Error('Invalid sprint ids.');
+
+  const issues = [];
+  let nextPageToken;
+  while (true) {
+    const reqBody = {
+      jql: `project = "${projectKey}" AND sprint in (${ids.join(',')})`,
+      fields: [spFieldId, fieldId, 'issuetype'],
+      maxResults: 100,
+    };
+    if (nextPageToken) reqBody.nextPageToken = nextPageToken;
+    const res = await asUser().requestJira(
+      route`/rest/api/3/search/jql`,
+      { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(reqBody) }
+    );
+    if (!res.ok) throw new Error(`Issue search failed (${res.status}).`);
+    const body = await res.json();
+    const page = body.issues || [];
+    issues.push(...page);
+    nextPageToken = body.nextPageToken;
+    if (!page.length || !nextPageToken) break;
+  }
+  return issues;
+}
+
+// Which of the fetched Epics have at least one child issue. Those Epics are
+// excluded from the totals (their children are counted directly); a childless
+// Epic keeps counting with its own estimate. If the child lookup fails the Epic
+// is treated as childless, i.e. counted — the safer error for a distribution.
+async function findEpicsWithChildren(issues) {
+  const epics = issues.filter(isEpicIssue);
+  const flags = await Promise.all(epics.map(async (e) => {
+    try {
+      const res = await asUser().requestJira(
+        route`/rest/api/3/search/jql`,
+        {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jql: `parent = ${e.key}`, fields: ['summary'], maxResults: 1 }),
+        }
+      );
+      if (!res.ok) return false;
+      return ((await res.json()).issues || []).length > 0;
+    } catch (_) {
+      return false;
+    }
+  }));
+  return new Set(epics.filter((_, i) => flags[i]).map(e => e.key));
+}
+
+// Actuals for the given releases (or every release that has a mapped sprint
+// when `releaseIds` is omitted), one search per release. Releases with no
+// mapped sprints come back as zeros so callers don't have to special-case them.
+resolver.define('getPortfolioActuals', async ({ payload }) => {
+  const { projectKey, releaseIds, forceRefresh } = payload ?? {};
+  if (!projectKey) return { releases: {}, error: 'No project key.' };
+  try {
+    const { settings, sprints, error } = await getScrumPortfolioContext(projectKey);
+    if (error) return { releases: {}, error };
+    const byRelease = groupSprintsByRelease(sprints);
+    // Jira version ids are numeric; anything else is dropped rather than
+    // reaching a cache key. Capped so one call can't fan out unboundedly.
+    const wanted = Array.isArray(releaseIds) && releaseIds.length
+      ? [...new Set(releaseIds.map(String).filter(id => /^\d{1,20}$/.test(id)))].slice(0, 50)
+      : [...byRelease.keys()].slice(0, 50);
+
+    const entries = await Promise.all(wanted.map(async (releaseId) => [
+      releaseId,
+      await computeReleaseActuals(projectKey, settings, releaseId, byRelease.get(releaseId) ?? [], forceRefresh),
+    ]));
+
+    return { fieldId: settings.portfolioFieldId, releases: Object.fromEntries(entries) };
+  } catch (e) {
+    return { releases: {}, error: e.message };
+  }
+});
+
+// ── TRI Portfolio Distribution gadget: data sources ──────────────────────────
+// One space's distribution for one release — everything a chart needs (actuals,
+// saved allocation, capacity for the cross-space weighting, thresholds) in one
+// shape, which is also the shape mergeSpaceDistributions() takes and returns.
+async function buildSpaceDistribution({ projectKey, name, settings, sprints, version, allocDoc }) {
+  const group = sprints.filter(s => s.releaseId === version.id);
+  const actuals = await computeReleaseActuals(projectKey, settings, version.id, group, false);
+  const stored = allocDoc.fields[settings.portfolioFieldId]?.releases?.[version.id] ?? null;
+  return {
+    projectKey, name,
+    releaseId: version.id, releaseName: version.name, releaseDate: version.releaseDate, released: version.released,
+    totalCapacity: rollupForVersion(sprints, version, settings).totalCapacity,
+    hasAllocation: !!stored, alloc: stored?.alloc ?? {}, names: stored?.names ?? {},
+    totalSp: actuals.totalSp, categories: actuals.categories, unassigned: actuals.unassigned,
+    unestimatedCount: actuals.unestimatedCount, sprintCount: actuals.sprintCount,
+    thresholds: {
+      warnPct: settings.portfolioWarnPct,
+      criticalPct: settings.portfolioCriticalPct,
+      minTolerancePp: settings.portfolioMinTolerancePp,
+    },
+  };
+}
+
+// "By release": one release (matched by NAME across spaces, like TRI Release
+// Capacity, or each space's own soonest-upcoming one when no name is given) for
+// every configured space, plus the merged Total. A space that can't be shown
+// comes back as an { error } entry rather than failing the whole call.
+resolver.define('getPortfolioReleaseDistribution', async ({ payload }) => {
+  const { spaces, releaseName, todayISO, previousReleaseCount } = payload ?? {};
+  if (!Array.isArray(spaces) || spaces.length === 0) return { results: [], total: null, error: 'No spaces configured.' };
+
+  const results = [];
+  for (const space of spaces.slice(0, 20)) {
+    const projectKey = space?.projectKey;
+    if (!projectKey) { results.push({ projectKey, error: 'Incomplete configuration.' }); continue; }
+    try {
+      const name = await getSpaceName(projectKey);
+      const ctx = await getScrumPortfolioContext(projectKey);
+      if (ctx.error) { results.push({ projectKey, name, error: ctx.error }); continue; }
+
+      const versions = await fetchProjectVersions(projectKey);
+      const releaseNames = selectReleaseNames(versions, previousReleaseCount, releaseName);
+      const version = releaseName ? versions.find(v => v.name === releaseName) : pickAutoVersion(versions, todayISO);
+      if (!version) { results.push({ projectKey, name, releaseNames, error: 'No matching release.' }); continue; }
+
+      const allocDoc = await readPortfolioDoc(projectKey);
+      const dist = await buildSpaceDistribution({ projectKey, name, settings: ctx.settings, sprints: ctx.sprints, version, allocDoc });
+      results.push({ ...dist, releaseNames });
+    } catch (e) {
+      results.push({ projectKey, error: e.message });
+    }
+  }
+
+  const ok = results.filter(r => !r.error);
+  return { results, total: ok.length ? mergeSpaceDistributions(ok) : null };
+});
+
+// "By space": one space's roadmap — an anchor release plus the next upcoming
+// ones up to `releaseCount` — one distribution per release (same selection rule
+// as TRI Release Capacity's By-release mode).
+resolver.define('getPortfolioRoadmapDistribution', async ({ payload }) => {
+  const { projectKey, releaseName, releaseCount, todayISO, previousReleaseCount } = payload ?? {};
+  if (!projectKey) return { results: [], error: 'No project key.' };
+  try {
+    const name = await getSpaceName(projectKey);
+    const ctx = await getScrumPortfolioContext(projectKey);
+    if (ctx.error) return { name, results: [], error: ctx.error };
+
+    const versions = await fetchProjectVersions(projectKey);
+    const releaseNames = selectReleaseNames(versions, previousReleaseCount, releaseName);
+    const anchor = releaseName ? versions.find(v => v.name === releaseName) : pickAutoVersion(versions, todayISO);
+    if (!anchor) return { name, results: [], releaseNames, error: 'No matching release.' };
+
+    const count = Math.min(6, Math.max(1, Number(releaseCount) || 4));
+    const roadmap = buildReleaseRoadmap(versions, anchor, count);
+    const allocDoc = await readPortfolioDoc(projectKey);
+    const results = await Promise.all(roadmap.map(version =>
+      buildSpaceDistribution({ projectKey, name, settings: ctx.settings, sprints: ctx.sprints, version, allocDoc })
+    ));
+    return { name, results, releaseNames };
+  } catch (e) {
+    return { results: [], error: e.message };
   }
 });
 

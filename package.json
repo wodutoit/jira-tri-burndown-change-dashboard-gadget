@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "license": "MIT",
   "scripts": {
+    "test": "node --test src/portfolio.test.js src/portfolio.merge.test.js static/gadgets/src/gadget/portfolioModel.test.mjs",
     "build-ui": "cd static/gadgets && npm run build",
     "deploy-dev": "npm run build-ui && forge deploy"
   },
