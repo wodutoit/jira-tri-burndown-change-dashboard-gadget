@@ -15,7 +15,7 @@ const HATCH = 'repeating-linear-gradient(45deg, rgba(255,255,255,.4) 0 3px, tran
 // unassigned work is a separate red pill since it has no allocation to size it.
 // (The button that opens the allocation popup lives in the Release column.)
 export default function PortfolioBar({ model, loading, error }) {
-  const { rows, unassigned, hasSaved, totalSp, unallocatedPct, unestimatedCount } = model;
+  const { rows, unassigned, hasSaved, totalSp, unallocatedPct, unestimatedCount, isDefault } = model;
   const segments = rows.filter(r => r.target > 0);
 
   return (
@@ -39,8 +39,14 @@ export default function PortfolioBar({ model, loading, error }) {
             />
           ))}
         </div>
-      ) : (
-        <span style={{ fontSize: 11, color: 'var(--text-subtlest)' }}>No portfolio allocation yet</span>
+      ) : null}
+      {isDefault && (
+        <span
+          title="This release has no allocation of its own, so it uses the space's default distribution. Open Portfolio to give it its own."
+          style={{ fontSize: 10, color: 'var(--text-subtlest)' }}
+        >
+          Space default
+        </span>
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
@@ -58,7 +64,7 @@ export default function PortfolioBar({ model, loading, error }) {
 
       {!loading && !error && unestimatedCount > 0 && (
         <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>
-          {unestimatedCount} unestimated ticket{unestimatedCount === 1 ? '' : 's'} counted as 1 SP
+          {unestimatedCount} unestimated ticket{unestimatedCount === 1 ? '' : 's'} counted as 1 SP each
         </span>
       )}
     </div>

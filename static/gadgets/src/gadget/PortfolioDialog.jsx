@@ -1,42 +1,31 @@
 import React, { useState } from 'react';
 import { editStyles as S } from './sprintConfigShared';
-import { fmtPct, STATUS_WORD } from './portfolioModel';
-
-const STATUS_DOT = { ok: 'var(--ok)', warn: 'var(--filling)', critical: 'var(--over)', none: 'var(--text-subtlest)' };
-
-function StatusDot({ status }) {
-  return (
-    <span
-      title={STATUS_WORD[status]}
-      aria-label={STATUS_WORD[status]}
-      style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: STATUS_DOT[status], flex: 'none' }}
-    />
-  );
-}
+import AllocationEditor, { initialAllocationValues, parseAllocationValues, allocationPayload } from './PortfolioAllocationEditor';
 
 // Per-release allocation editor. The parent remounts it (via `key`) whenever the
 // stored allocation changes underneath it, so the inputs always start from — and
 // `loadedUpdatedAt` always matches — the version actually on screen.
-export default function PortfolioDialog({ releaseName, model, loadedUpdatedAt, saving, error, optionsError, onSave, onCancel }) {
-  const { rows, unassigned, hasActuals, totalSp, unestimatedCount, sprintCount, newCount, removedCount } = model;
-  const [values, setValues] = useState(() => Object.fromEntries(rows.map(r => [r.id, r.target ? String(r.target) : ''])));
+//
+// A release shows the space default until it's given its own allocation:
+//  - `model.isDefault` is true while it's still following the default; saving then
+//    creates a release-specific allocation that stops following it.
+//  - `hasDefault && !model.isDefault` means the release has its own allocation and
+//    can be reset to the default (which deletes the override, so it tracks the
+//    default again). `loadedUpdatedAt` is the release's OWN allocation's version
+//    (null while it's on the default).
+export default function PortfolioDialog({
+  releaseName, model, loadedUpdatedAt, hasDefault, saving, error, optionsError, onSave, onReset, onCancel,
+}) {
+  const { rows, hasActuals, totalSp, unestimatedCount, sprintCount, newCount, removedCount, isDefault } = model;
+  const [values, setValues] = useState(() => initialAllocationValues(rows));
+  const [confirmReset, setConfirmReset] = useState(false);
 
-  const parsed = rows.map(r => {
-    const raw = values[r.id];
-    const n = raw === '' || raw == null ? 0 : Number(raw);
-    return { id: r.id, n, valid: Number.isFinite(n) && n >= 0 && n <= 100 };
-  });
-  const allValid = parsed.every(p => p.valid);
-  const total = Math.round(parsed.reduce((a, p) => a + (p.valid ? p.n : 0), 0) * 10) / 10;
-  const over = total > 100 + 1e-6;
-  const canSave = allValid && !over && !saving;
+  const parsedState = parseAllocationValues(rows, values);
+  const canSave = parsedState.allValid && !parsedState.over && !saving;
+  const canReset = hasDefault && !isDefault;
 
   const handleSave = () => {
-    const alloc = {};
-    const names = {};
-    for (const r of rows) names[r.id] = r.name;
-    for (const p of parsed) if (p.n > 0) alloc[p.id] = p.n;
-    onSave({ alloc, names, expectedUpdatedAt: loadedUpdatedAt });
+    onSave({ ...allocationPayload(rows, parsedState.parsed), expectedUpdatedAt: loadedUpdatedAt });
   };
 
   return (
@@ -47,9 +36,15 @@ export default function PortfolioDialog({ releaseName, model, loadedUpdatedAt, s
           Set the share of this release's work you want in each category. Targets can add up to 100% or less.
         </div>
 
+        {isDefault && (
+          <div style={{ ...S.notice, marginTop: 12 }}>
+            This release is using the space's <strong>default distribution</strong>. If you save changes here it gets
+            its own allocation and stops following the default; "Reset to default" undoes that.
+          </div>
+        )}
         {newCount > 0 && (
           <div style={{ ...S.notice, marginTop: 12 }}>
-            {newCount} option{newCount === 1 ? ' was' : 's were'} added in Jira since this release was last saved. {newCount === 1 ? 'It is' : 'They are'} at 0% until you allocate {newCount === 1 ? 'it' : 'them'}, so any work tagged with {newCount === 1 ? 'it' : 'them'} shows as out of range.
+            {newCount} option{newCount === 1 ? ' was' : 's were'} added in Jira since this {isDefault ? 'default' : 'release'} was last saved. {newCount === 1 ? 'It is' : 'They are'} at 0% until you allocate {newCount === 1 ? 'it' : 'them'}, so any work tagged with {newCount === 1 ? 'it' : 'them'} shows as out of range.
           </div>
         )}
         {removedCount > 0 && (
@@ -63,86 +58,51 @@ export default function PortfolioDialog({ releaseName, model, loadedUpdatedAt, s
           </div>
         )}
 
-        <table style={{ ...S.table, marginTop: 14 }}>
-          <thead>
-            <tr>
-              <th style={S.th}>Category</th>
-              <th style={S.th}>Target %</th>
-              <th style={S.th}>Actual</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr><td style={S.td} colSpan={3}>No categories found for this space's portfolio field.</td></tr>
-            ) : rows.map((r, i) => (
-              <tr key={r.id} style={S.row}>
-                <td style={S.td}>
-                  <span style={{ fontWeight: 600, textDecoration: r.removed ? 'line-through' : 'none' }}>{r.name}</span>
-                  {r.disabled && <span style={{ ...S.chip, marginLeft: 6, background: 'var(--surface-sunken)', color: 'var(--text-subtle)' }}>Disabled</span>}
-                  {r.isNew && <span style={{ ...S.chip, marginLeft: 6, background: 'var(--info-bg)', color: 'var(--info-text)' }}>New</span>}
-                  {r.removed && <span style={{ ...S.chip, marginLeft: 6, background: 'var(--surface-sunken)', color: 'var(--text-subtle)' }}>Removed</span>}
-                </td>
-                <td style={S.td}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <input
-                      type="number" min="0" max="100" step="0.1"
-                      value={values[r.id]}
-                      aria-label={`Target percent for ${r.name}`}
-                      onChange={e => setValues(v => ({ ...v, [r.id]: e.target.value }))}
-                      style={{ ...S.numInput, borderColor: parsed[i].valid ? 'var(--border)' : 'var(--over)' }}
-                    />
-                    {r.removed && values[r.id] !== '' && (
-                      <button style={S.smallBtn} onClick={() => setValues(v => ({ ...v, [r.id]: '' }))}>Clear</button>
-                    )}
-                  </div>
-                </td>
-                <td style={S.td}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                    <StatusDot status={r.status} />
-                    <span>{r.actualPct == null ? '—' : `${fmtPct(r.actualPct)} · ${r.actualSp} SP`}</span>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            <tr style={S.row}>
-              <td style={S.td}>
-                <span style={{ fontWeight: 600 }}>Unassigned</span>
-                <div style={{ fontSize: 11, color: 'var(--text-subtlest)' }}>No category set on the ticket — target is always 0%</div>
-              </td>
-              <td style={S.td}><span style={{ fontSize: 12, color: 'var(--text-subtle)' }}>0%</span></td>
-              <td style={S.td}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                  <StatusDot status={unassigned.status} />
-                  <span>{unassigned.actualPct == null ? '—' : `${fmtPct(unassigned.actualPct)} · ${unassigned.actualSp} SP`}</span>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12, fontSize: 13, fontWeight: 700 }}>
-          <span style={{ color: over ? 'var(--over-text)' : 'var(--text)' }}>Total allocated: {total}%</span>
-          <span style={{ color: 'var(--text-subtle)', fontWeight: 600 }}>
-            {over ? 'Over by ' + Math.round((total - 100) * 10) / 10 + '%' : `Unallocated: ${Math.round((100 - total) * 10) / 10}%`}
-          </span>
-        </div>
-        {!allValid && <div style={{ ...S.error, marginTop: 8 }}>Each target must be a number between 0 and 100.</div>}
-        {over && <div style={{ ...S.error, marginTop: 8 }}>Targets can't add up to more than 100%.</div>}
+        <AllocationEditor
+          model={model}
+          values={values}
+          onChange={(id, v) => setValues(cur => ({ ...cur, [id]: v }))}
+          parsedState={parsedState}
+        />
 
         <div style={{ ...S.hint, marginTop: 12 }}>
           {hasActuals
             ? <>Actual = current story points of every ticket in the {sprintCount} sprint{sprintCount === 1 ? '' : 's'} mapped to this release ({totalSp} SP in total).</>
             : <>Actual shares appear once tickets are in this release's sprints.</>}
-          {' '}Tickets with no estimate count as 1 SP{unestimatedCount > 0 ? ` (${unestimatedCount} right now)` : ''}; sub-tasks without their own estimate count 0; an Epic with child issues is skipped because its children are counted.
+          {' '}Each ticket with no estimate counts as 1 SP{unestimatedCount > 0 ? ` (${unestimatedCount} right now, so ${unestimatedCount} SP in total)` : ''}; sub-tasks without their own estimate count 0; an Epic with child issues is skipped because its children are counted.
         </div>
 
         {error && <div style={{ ...S.error, marginTop: 12 }}>{error}</div>}
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
-          <button onClick={onCancel} disabled={saving} style={{ ...S.btn, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-subtle)' }}>Cancel</button>
-          <button onClick={handleSave} disabled={!canSave} style={{ ...S.btn, opacity: canSave ? 1 : 0.5 }}>
-            {saving ? 'Saving…' : 'Save allocation'}
-          </button>
+        {confirmReset && (
+          <div style={{ ...S.notice, marginTop: 12 }}>
+            Discard this release's own allocation and use the space default instead? This can't be undone.
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <button style={S.smallBtn} disabled={saving} onClick={() => onReset({ expectedUpdatedAt: loadedUpdatedAt })}>Reset to default</button>
+              <button style={S.smallBtn} disabled={saving} onClick={() => setConfirmReset(false)}>Keep my allocation</button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 20 }}>
+          <div>
+            {canReset && !confirmReset && (
+              <button
+                onClick={() => setConfirmReset(true)}
+                disabled={saving}
+                title="Remove this release's own allocation so it follows the space default again"
+                style={{ ...S.smallBtn, padding: '7px 12px', fontSize: 12 }}
+              >
+                Reset to default
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button onClick={onCancel} disabled={saving} style={{ ...S.btn, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-subtle)' }}>Cancel</button>
+            <button onClick={handleSave} disabled={!canSave} style={{ ...S.btn, opacity: canSave ? 1 : 0.5 }}>
+              {saving ? 'Saving…' : 'Save allocation'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

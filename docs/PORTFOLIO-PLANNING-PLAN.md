@@ -23,12 +23,27 @@ visualise it.
 | Total target (gadget) | Weighted by each space's capacity for the release (same capacity figure the release rollups use). Spaces with no allocation for that release are left out of the weights and flagged. |
 | Charts | Donut with a target ring (default); bullet bars as an option. |
 
+## Default distribution (added after step 5)
+
+- A per-space **default distribution** (set on the space's Capacity Planning settings page, under Portfolio
+  Planning) is used by every release that has no allocation of its own. A release's own allocation always
+  wins; it is a full replacement, not a merge.
+- On the release popup, **Reset to default** deletes the release's own allocation (with an inline
+  confirmation), so it tracks the default again. Saving a release while it is still on the default creates
+  its own allocation. Clearing every target on a release when a default exists is stored as an explicit empty
+  override (otherwise it would silently snap back to the default); with no default, clearing deletes it.
+- The default also applies to **already-released versions**, so editing it changes their targets too; save a
+  release's own allocation to pin it. (Not frozen automatically — an accepted trade-off.)
+- Categories are not judged green/orange/red when a release has no allocation at all (nothing to compare to);
+  Unassigned is still always red.
+- Gadget charts note when their target is the space default.
+
 ## Data model
 
 - Settings (`capacity-settings:<project>`, KVS): `portfolioPlanningEnabled`, `portfolioFieldId`,
   `portfolioWarnPct`, `portfolioCriticalPct`, `portfolioMinTolerancePp`.
 - Allocations (`portfolio-alloc:<project>`, KVS):
-  `{ fields: { [fieldId]: { releases: { [versionId]: { alloc: { [optionId]: pct }, names: { [optionId]: name }, updatedAt } } } } }`.
+  `{ fields: { [fieldId]: { default?: { alloc, names, updatedAt }, releases: { [versionId]: { alloc: { [optionId]: pct }, names: { [optionId]: name }, updatedAt } } } } }`.
   Bucketed by field so a field change never destroys the old field's allocations — they stop being read
   and return if the field is switched back. Writes carry `expectedUpdatedAt`; a mismatch returns a
   conflict instead of overwriting someone else's edit of the same release (different releases in the
@@ -94,7 +109,7 @@ option handling above.
    (an explicit 0 stays 0); blank-estimate subtasks count 0 (estimated subtasks count); no category →
    Unassigned. Epics get no rollup: an Epic in a sprint that has child issues is ignored (its children are
    counted directly); an Epic with no children counts with its own estimate like any ticket.
-   Results include `unestimatedCount` so the UI can say "N tickets counted as 1 SP".
+   Results include `unestimatedCount` so the UI can say "N tickets counted as 1 SP each".
 4. ✅ Capacity page: `PortfolioDialog` (allocation editor, new/removed-option handling, conflict-safe save),
    `PortfolioBar` (allocation bar under the Status chip, Unassigned pill, native tooltips, hatched red
    segments), `usePortfolio` hook, and `portfolioModel.js` (pure row/status model, unit tested). Saved

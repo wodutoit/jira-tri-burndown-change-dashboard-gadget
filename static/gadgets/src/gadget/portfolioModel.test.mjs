@@ -55,7 +55,7 @@ test('tickets carrying an unlisted option still show, labelled from the actuals'
   const x = r.rows.find(y => y.id === '7');
   assert.equal(x.name, 'n7');
   assert.equal(x.removed, true);
-  assert.equal(x.status, 'critical'); // target 0, actual 50%
+  assert.equal(x.status, 'none'); // no allocation at all -> nothing to judge it against
 });
 
 test('released versions get no new/removed flags (historical snapshot)', () => {
@@ -69,4 +69,22 @@ test('when options could not be listed nothing is flagged and names fall back to
   const r = buildPortfolioRows({ thresholds, options: [], optionsLoaded: false, allocation, actuals: null });
   assert.equal(r.rows[0].name, 'Snapshot name');
   assert.ok(r.rows.every(x => !x.isNew && !x.removed));
+});
+
+test('with an allocation, an unallocated category carrying work is critical (target 0)', () => {
+  const r = build({ allocation: { alloc: { 1: 100 }, names: { 1: 'Infra' } }, actuals: actuals({ 1: 10, 7: 10 }) });
+  assert.equal(r.rows.find(x => x.id === '7').status, 'critical');
+});
+
+test('no allocation: categories are not judged, but Unassigned work is still critical', () => {
+  const r = build({ allocation: null, actuals: actuals({ 1: 90 }, 10) });
+  assert.ok(r.rows.every(x => x.status === 'none'));
+  assert.equal(r.unassigned.status, 'critical');
+});
+
+test('isDefault is reported only when an allocation is actually shown', () => {
+  const allocation = { alloc: { 1: 50 }, names: { 1: 'Infra' } };
+  assert.equal(build({ allocation, isDefault: true, actuals: null }).isDefault, true);
+  assert.equal(build({ allocation, actuals: null }).isDefault, false);
+  assert.equal(build({ allocation: null, isDefault: true, actuals: null }).isDefault, false);
 });

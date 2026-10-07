@@ -2,7 +2,7 @@ const Resolver = require('@forge/resolver').default;
 const { route, asUser } = require('@forge/api');
 const { kvs } = require('@forge/kvs');
 const crypto = require('crypto');
-const { validateAllocation, aggregateActuals, mergeSpaceDistributions } = require('./portfolio');
+const { validateAllocation, aggregateActuals, mergeSpaceDistributions, resolveEffectiveAllocation } = require('./portfolio');
 
 const resolver = new Resolver();
 
@@ -415,7 +415,7 @@ async function fetchSprintIssues(projectKey, sprintId, spFieldId) {
 
   while (true) {
     const reqBody = {
-      jql: `project = "${projectKey}" AND sprint = ${sprintId}`,
+      jql: `project = "${projectKey}" AND sprint = ${sprintId} AND issuetype != Epic`,
       fields,
       expand: 'changelog',
       maxResults: 50,
@@ -448,11 +448,16 @@ async function fetchSprintIssues(projectKey, sprintId, spFieldId) {
 // (not just the first — a ticket can be added/removed multiple times).
 async function extractRawSprintData(sprintId, issues, spFieldId) {
   const sprintIdStr = String(sprintId);
-  const spByKey = await resolveIssueSpValues(issues, spFieldId);
   const issueData = {};
 
   for (const issue of issues) {
-    const sp = spByKey.get(issue.key);
+    // Own SP only — no Epic child rollup here. Jira's backlog/sprint totals use
+    // each issue's own estimate, and an Epic that sits in the sprint would
+    // otherwise be replaced by the sum of ALL its children (any sprint), while
+    // those children in this sprint are also counted on their own rows —
+    // inflating commitment (ZEN Sprint 13: 135 SP vs Jira's 84).
+    const own = issue.fields?.[spFieldId];
+    const sp = typeof own === 'number' ? own : 0;
     const transitions = [];
     const sprintEvents = [];
 
@@ -488,7 +493,7 @@ async function extractRawSprintData(sprintId, issues, spFieldId) {
 }
 
 async function getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh }) {
-  const cacheKey = `raw:${sprint.id}:${spFieldId}`;
+  const cacheKey = `raw-noepic:${sprint.id}:${spFieldId}`;
 
   if (!forceRefresh) {
     try {
@@ -617,9 +622,17 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, grace
 
     // Committed scope: in sprint from the start (no add event, or created before
     // the sprint even existed) or added within the grace window.
+    // A ticket already in an "excluded" status (e.g. Not Required) at the
+    // cutoff isn't committed scope. Without this check its SP was counted
+    // here and the later excluded-transition deduction was dropped as
+    // out-of-range whenever the transition predated the sprint (ZEN Sprint
+    // 13: 35 SP of already-Not-Required carry-overs inflated every series).
+    const excludedAt = ms => statusMapping[statusAt(issue.transitions, ms, issue.currentStatus)] === 'excluded';
     const addTs = firstAdd?.ts ?? issue.created;
-    if (!addTs || Date.parse(addTs) <= cutoffMs) {
+    let counted = false;
+    if ((!addTs || Date.parse(addTs) <= cutoffMs) && !excludedAt(cutoffMs)) {
       initialCommitted[key] = sp;
+      counted = true;
     }
 
     // Every add/remove event nudges the running scope on the day it happened —
@@ -637,6 +650,9 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, grace
     // addDelta's range check regardless.
     for (const ev of issue.sprintEvents) {
       if (Date.parse(ev.ts) <= cutoffMs) continue;
+      // Adding/removing an already-excluded ticket moves no scope.
+      if (excludedAt(Date.parse(ev.ts))) continue;
+      if (ev.type === 'added') counted = true;
       addDelta(snapToBizDay(ev.ts), ev.type === 'added' ? sp : -sp);
     }
 
@@ -645,7 +661,8 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, grace
     const nrTrans = issue.transitions.find(t => statusMapping[t.to] === 'excluded');
     if (nrTrans) {
       nrTsByKey[key] = nrTrans.ts;
-      addDelta(snapToBizDay(nrTrans.ts), -sp);
+      // Only deduct scope that was actually counted (see excludedAt above).
+      if (counted && Date.parse(nrTrans.ts) > cutoffMs) addDelta(snapToBizDay(nrTrans.ts), -sp);
     }
   }
 
@@ -794,12 +811,13 @@ function computeScopeChangeData(sprint, issueData, statusMapping, graceWindowHou
     const sp = issue.sp || 0;
     for (const ev of issue.sprintEvents) {
       if (Date.parse(ev.ts) <= cutoffMs) continue;
+      if (statusMapping[statusAt(issue.transitions, Date.parse(ev.ts), issue.currentStatus)] === 'excluded') continue;
       const day = snapToBizDay(ev.ts);
       if (day < startDate || day > endDate) continue;
       events.push({ key, summary: issue.summary, ts: ev.ts, sp: ev.type === 'added' ? sp : -sp });
     }
     for (const t of issue.transitions) {
-      if (statusMapping[t.to] === 'excluded') {
+      if (statusMapping[t.to] === 'excluded' && Date.parse(t.ts) > cutoffMs) {
         const day = snapToBizDay(t.ts);
         if (day < startDate || day > endDate) continue;
         events.push({ key, summary: issue.summary, ts: t.ts, sp: -sp });
@@ -1419,13 +1437,21 @@ resolver.define('setCapacitySettings', async ({ payload }) => {
   }
 });
 
-// ── Portfolio Planning: per-release allocations ──────────────────────────────
+// ── Portfolio Planning: allocations (per release, plus a per-space default) ──
 // Stored per space in kvs as
-//   portfolio-alloc:<project> = { fields: { [fieldId]: { releases: { [versionId]: { alloc, names, updatedAt } } } } }
+//   portfolio-alloc:<project> = { fields: { [fieldId]: {
+//       default:  { alloc, names, updatedAt },                      // optional
+//       releases: { [versionId]: { alloc, names, updatedAt } },     // per-release overrides
+//   } } }
 // Bucketed BY FIELD so changing a space's portfolio field never destroys the
 // old field's allocations — they just stop being read, and come back if the
 // field is switched back. alloc is { [optionId]: percent }; names is a
-// display-name snapshot so a since-deleted option can still be labelled.
+// snapshot of every option known at save time so a since-deleted option can
+// still be labelled and a newly added one flagged.
+//
+// A release uses its own override when it has one, otherwise the space default
+// (resolveEffectiveAllocation in portfolio.js). "Reset to default" is simply
+// deleting the release's override, so the release keeps tracking the default.
 
 async function readPortfolioDoc(projectKey) {
   const doc = await kvs.get(`portfolio-alloc:${projectKey}`);
@@ -1434,7 +1460,7 @@ async function readPortfolioDoc(projectKey) {
 
 // Shared gate for every allocation read/write: the space must have Portfolio
 // Planning on and a field chosen. (Scrum-only is enforced when enabling in
-// setCapacitySettings, and re-checked on writes below.)
+// setCapacitySettings, and re-checked on writes via getPortfolioWriteContext.)
 async function getPortfolioSettings(projectKey) {
   const settings = await getCapacitySettingsFor(projectKey);
   if (!settings.portfolioPlanningEnabled) return { error: 'Portfolio Planning is not enabled for this space.' };
@@ -1442,66 +1468,119 @@ async function getPortfolioSettings(projectKey) {
   return { settings };
 }
 
-// All of a space's allocations for its CURRENT portfolio field, keyed by
-// version id — one call feeds every row's allocation bar in the summary table.
+// The write-side gate: the read gate plus a Scrum check, returning the current
+// field's bucket so callers can modify just their part of it.
+async function getPortfolioWriteContext(projectKey) {
+  const { settings, error } = await getPortfolioSettings(projectKey);
+  if (error) return { error };
+  const { boardType, error: btErr } = await getEffectiveBoardType(projectKey, settings);
+  if (btErr) return { error: `Couldn't confirm this is a Scrum space: ${btErr}` };
+  if (boardType !== 'scrum') return { error: 'Portfolio Planning is only available for Scrum spaces.' };
+  const fieldId = settings.portfolioFieldId;
+  const doc = await readPortfolioDoc(projectKey);
+  return { settings, fieldId, doc, bucket: doc.fields[fieldId] ?? {} };
+}
+
+// All of a space's allocations for its CURRENT portfolio field — the per-release
+// overrides keyed by version id plus the space default — in one call, which
+// feeds every row's allocation bar in the summary table.
 resolver.define('getPortfolioAllocations', async ({ payload }) => {
   const { projectKey } = payload ?? {};
-  if (!projectKey) return { releases: {}, error: 'No project key.' };
+  if (!projectKey) return { releases: {}, default: null, error: 'No project key.' };
   try {
     const { settings, error } = await getPortfolioSettings(projectKey);
-    if (error) return { releases: {}, error };
+    if (error) return { releases: {}, default: null, error };
     const doc = await readPortfolioDoc(projectKey);
+    const bucket = doc.fields[settings.portfolioFieldId] ?? {};
     return {
       fieldId: settings.portfolioFieldId,
-      releases: doc.fields[settings.portfolioFieldId]?.releases ?? {},
+      releases: bucket.releases ?? {},
+      default: bucket.default ?? null,
     };
   } catch (e) {
-    return { releases: {}, error: e.message };
+    return { releases: {}, default: null, error: e.message };
   }
 });
 
-// Saves (or, with an empty allocation, clears) one release's allocation.
-// `expectedUpdatedAt` is the updatedAt the editor loaded (null if the release
-// had none): if someone else saved that release in between, this is refused
-// instead of silently overwriting their change.
+// Saves one release's own allocation, or with `reset: true` deletes it so the
+// release falls back to the space default. `expectedUpdatedAt` is the updatedAt
+// the editor loaded (null if the release had no override): if someone else
+// saved that release in between, this is refused instead of overwriting them.
+// An empty allocation clears the override when there is no default to fall back
+// to; when there IS a default it is kept as an explicit "no targets" override
+// (otherwise clearing every field would silently snap back to the default).
 resolver.define('setPortfolioAllocation', async ({ payload }) => {
-  const { projectKey, releaseId, alloc, names, expectedUpdatedAt } = payload ?? {};
+  const { projectKey, releaseId, alloc, names, expectedUpdatedAt, reset } = payload ?? {};
   if (!projectKey || !releaseId) return { error: 'Missing project key or release.' };
   try {
-    const { settings, error } = await getPortfolioSettings(projectKey);
-    if (error) return { error };
-
-    const { boardType, error: btErr } = await getEffectiveBoardType(projectKey, settings);
-    if (btErr) return { error: `Couldn't confirm this is a Scrum space: ${btErr}` };
-    if (boardType !== 'scrum') return { error: 'Portfolio Planning is only available for Scrum spaces.' };
-
-    const checked = validateAllocation(alloc, names);
-    if (checked.error) return { error: checked.error };
+    const ctx = await getPortfolioWriteContext(projectKey);
+    if (ctx.error) return { error: ctx.error };
+    const { fieldId, doc, bucket } = ctx;
 
     // Only real versions of this space can carry an allocation — keeps stray
     // ids out of storage and catches a release deleted since the page loaded.
     const versions = await fetchProjectVersions(projectKey);
     if (!versions.some(v => v.id === String(releaseId))) return { error: 'That release no longer exists in this space.' };
 
-    const fieldId = settings.portfolioFieldId;
-    const doc = await readPortfolioDoc(projectKey);
-    const releases = { ...(doc.fields[fieldId]?.releases ?? {}) };
+    const releases = { ...(bucket.releases ?? {}) };
     const current = releases[releaseId] ?? null;
-
     if (expectedUpdatedAt !== undefined && (current?.updatedAt ?? null) !== (expectedUpdatedAt ?? null)) {
       return { conflict: true, current, error: 'This release\'s allocation was changed by someone else. Reload to see their changes.' };
     }
 
     let saved = null;
-    if (Object.keys(checked.alloc).length === 0) {
+    let total = 0;
+    if (reset) {
       delete releases[releaseId];
     } else {
-      saved = { alloc: checked.alloc, names: checked.names, updatedAt: new Date().toISOString() };
-      releases[releaseId] = saved;
+      const checked = validateAllocation(alloc, names);
+      if (checked.error) return { error: checked.error };
+      total = checked.total;
+      if (Object.keys(checked.alloc).length === 0 && !bucket.default) {
+        delete releases[releaseId];
+      } else {
+        saved = { alloc: checked.alloc, names: checked.names, updatedAt: new Date().toISOString() };
+        releases[releaseId] = saved;
+      }
     }
-    doc.fields[fieldId] = { releases };
+    doc.fields[fieldId] = { ...bucket, releases };
     await kvs.set(`portfolio-alloc:${projectKey}`, doc);
-    return { ok: true, allocation: saved, total: checked.total };
+    return { ok: true, allocation: saved, total };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// Saves (or, with an empty allocation, removes) the space default that every
+// release without its own override uses. Same validation and conflict check as
+// a per-release save, against the default's own updatedAt.
+resolver.define('setPortfolioDefault', async ({ payload }) => {
+  const { projectKey, alloc, names, expectedUpdatedAt } = payload ?? {};
+  if (!projectKey) return { error: 'No project key.' };
+  try {
+    const ctx = await getPortfolioWriteContext(projectKey);
+    if (ctx.error) return { error: ctx.error };
+    const { fieldId, doc, bucket } = ctx;
+
+    const checked = validateAllocation(alloc, names);
+    if (checked.error) return { error: checked.error };
+
+    const current = bucket.default ?? null;
+    if (expectedUpdatedAt !== undefined && (current?.updatedAt ?? null) !== (expectedUpdatedAt ?? null)) {
+      return { conflict: true, current, error: 'The default distribution was changed by someone else. Reload to see their changes.' };
+    }
+
+    const next = { ...bucket };
+    let saved = null;
+    if (Object.keys(checked.alloc).length === 0) {
+      delete next.default;
+    } else {
+      saved = { alloc: checked.alloc, names: checked.names, updatedAt: new Date().toISOString() };
+      next.default = saved;
+    }
+    doc.fields[fieldId] = next;
+    await kvs.set(`portfolio-alloc:${projectKey}`, doc);
+    return { ok: true, default: saved, total: checked.total };
   } catch (e) {
     return { error: e.message };
   }
@@ -1677,12 +1756,13 @@ resolver.define('getPortfolioActuals', async ({ payload }) => {
 async function buildSpaceDistribution({ projectKey, name, settings, sprints, version, allocDoc }) {
   const group = sprints.filter(s => s.releaseId === version.id);
   const actuals = await computeReleaseActuals(projectKey, settings, version.id, group, false);
-  const stored = allocDoc.fields[settings.portfolioFieldId]?.releases?.[version.id] ?? null;
+  const { allocation: stored, source } = resolveEffectiveAllocation(allocDoc.fields[settings.portfolioFieldId], version.id);
   return {
     projectKey, name,
     releaseId: version.id, releaseName: version.name, releaseDate: version.releaseDate, released: version.released,
     totalCapacity: rollupForVersion(sprints, version, settings).totalCapacity,
-    hasAllocation: !!stored, alloc: stored?.alloc ?? {}, names: stored?.names ?? {},
+    hasAllocation: !!stored, usesDefault: source === 'default',
+    alloc: stored?.alloc ?? {}, names: stored?.names ?? {},
     totalSp: actuals.totalSp, categories: actuals.categories, unassigned: actuals.unassigned,
     unestimatedCount: actuals.unestimatedCount, sprintCount: actuals.sprintCount,
     thresholds: {

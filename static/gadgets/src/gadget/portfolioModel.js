@@ -18,7 +18,7 @@ export const UNASSIGNED_ID = '__unassigned';
 //
 // status per row: 'ok' | 'warn' | 'critical', or 'none' when there's nothing to
 // compare against yet (no actuals, or a release with no tickets).
-export function buildPortfolioRows({ options = [], optionsLoaded = false, allocation = null, actuals = null, historical = false, thresholds }) {
+export function buildPortfolioRows({ options = [], optionsLoaded = false, allocation = null, isDefault = false, actuals = null, historical = false, thresholds }) {
   const alloc = allocation?.alloc ?? {};
   const known = allocation?.names ?? {};
   const hasSaved = !!allocation;
@@ -26,9 +26,11 @@ export function buildPortfolioRows({ options = [], optionsLoaded = false, alloca
   const hasActuals = !!actuals && totalSp > 0;
   const optionById = new Map(options.map(o => [o.id, o]));
 
-  const statusFor = (actualPct, target) => (hasActuals
-    ? classifyPortfolioShare(actualPct, target, thresholds.warnPct, thresholds.criticalPct, thresholds.minTolerancePp)
-    : 'none');
+  const classify = (actualPct, target) => classifyPortfolioShare(actualPct, target, thresholds.warnPct, thresholds.criticalPct, thresholds.minTolerancePp);
+  // With no allocation at all there's no target to measure a category against,
+  // so it isn't judged (rather than every category reading as "off target").
+  // Unassigned is the exception: its target is always 0, allocation or not.
+  const statusFor = (actualPct, target) => (hasActuals && hasSaved ? classify(actualPct, target) : 'none');
   const pctOf = (sp) => (hasActuals ? (sp / totalSp) * 100 : null);
 
   // Jira's order first, then anything allocated or carried by tickets that Jira
@@ -67,11 +69,13 @@ export function buildPortfolioRows({ options = [], optionsLoaded = false, alloca
       id: UNASSIGNED_ID, name: 'Unassigned', target: 0,
       actualSp: unassignedSp, actualPct: unassignedPct,
       // Target is always 0, so any unassigned work is critical (red).
-      status: unassignedSp > 0 ? statusFor(unassignedPct, 0) : 'none',
+      status: unassignedSp > 0 && hasActuals ? classify(unassignedPct, 0) : 'none',
     },
     allocatedTotal,
     unallocatedPct: Math.max(0, Math.round((100 - allocatedTotal) * 10) / 10),
     hasSaved, hasActuals, totalSp,
+    // True when the allocation shown is the space default rather than this release's own.
+    isDefault: hasSaved && isDefault,
     unestimatedCount: actuals?.unestimatedCount ?? 0,
     sprintCount: actuals?.sprintCount ?? 0,
     newCount: rows.filter(r => r.isNew).length,

@@ -228,7 +228,7 @@ export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, bas
               <div>{s.name}</div>
               {portfolio && (
                 <button onClick={() => portfolio.onOpen(s.releaseId)} style={{ ...S.smallBtn, marginTop: 6 }}>
-                  {portfolio.allocations[s.releaseId] ? 'Portfolio' : 'Set portfolio'}
+                  {portfolio.allocations[s.releaseId] || portfolio.defaultAllocation ? 'Portfolio' : 'Set portfolio'}
                 </button>
               )}
             </td>
@@ -244,7 +244,9 @@ export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, bas
                   model={buildPortfolioRows({
                     options: portfolio.options,
                     optionsLoaded: portfolio.optionsLoaded,
-                    allocation: portfolio.allocations[s.releaseId] ?? null,
+                    // A release's own allocation wins; otherwise the space default.
+                    allocation: portfolio.allocations[s.releaseId] ?? portfolio.defaultAllocation ?? null,
+                    isDefault: !portfolio.allocations[s.releaseId],
                     actuals: portfolio.actuals[s.releaseId] ?? null,
                     historical: !!findRelease(s.releaseId, releaseOptions)?.released,
                     thresholds: portfolio.thresholds,

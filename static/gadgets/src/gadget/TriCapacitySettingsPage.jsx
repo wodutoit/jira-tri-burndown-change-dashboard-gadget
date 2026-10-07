@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { invoke, view } from '@forge/bridge';
 import { editStyles as S, Section } from './sprintConfigShared';
 import { statusStyle, portfolioBands } from './gadgetUtils';
+import PortfolioDefaultEditor from './PortfolioDefaultEditor';
 
 // jira:projectSettingsPage — toggles the "tri-capacity-planning" project
 // entity property that jira:projectPage's displayConditions.entityPropertyEqualTo
@@ -456,6 +457,26 @@ export default function TriCapacitySettingsPage() {
               </div>
               {exampleBands && <div style={S.hint}>Example: {exampleBands.join(' · ')}</div>}
             </div>
+
+            {portfolioFieldId && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Default distribution</div>
+                <div style={S.hint}>
+                  The target split used by every release that doesn't have its own allocation. A release can override
+                  it from its Portfolio button on the Capacity tab, and "Reset to default" there puts it back on this.
+                  The default also applies to releases that have already shipped, so changing it changes their targets
+                  too — save a release's own allocation to keep it fixed.
+                </div>
+                <PortfolioDefaultEditor
+                  projectKey={projectKey}
+                  fieldId={portfolioFieldId}
+                  options={portfolioOptions}
+                  optionsLoaded={!optionsError && portfolioOptions.length > 0}
+                  optionsError={optionsError}
+                  thresholds={{ warnPct: settings.portfolioWarnPct, criticalPct: settings.portfolioCriticalPct, minTolerancePp: settings.portfolioMinTolerancePp }}
+                />
+              </div>
+            )}
           </div>
         )}
       </Section>

@@ -204,7 +204,8 @@ export default function PortfolioChart({ title, subtitle, badge, data, chartStyl
 
       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 2 }}>
         {!model.hasSaved && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>No portfolio allocation set for this release — showing actuals only.</span>}
-        {model.unestimatedCount > 0 && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{model.unestimatedCount} unestimated ticket{model.unestimatedCount === 1 ? '' : 's'} counted as 1 SP</span>}
+        {model.hasSaved && data.usesDefault && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>Target is the space's default distribution.</span>}
+        {model.unestimatedCount > 0 && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{model.unestimatedCount} unestimated ticket{model.unestimatedCount === 1 ? '' : 's'} counted as 1 SP each</span>}
         {notes.map((n, i) => <span key={i} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>)}
       </div>
     </div>

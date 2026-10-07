@@ -62,3 +62,18 @@ test('thresholds use the most lenient value; unassigned and unestimated are summ
   assert.equal(t.unassigned.sp, 7);
   assert.equal(t.unestimatedCount, 3);
 });
+
+const { resolveEffectiveAllocation } = require('./portfolio');
+
+test('a release override wins over the space default; otherwise the default applies; otherwise none', () => {
+  const bucket = { default: { alloc: { 1: 50 } }, releases: { 10: { alloc: { 1: 20 } } } };
+  assert.deepEqual(resolveEffectiveAllocation(bucket, '10'), { allocation: { alloc: { 1: 20 } }, source: 'override' });
+  assert.equal(resolveEffectiveAllocation(bucket, '11').source, 'default');
+  assert.equal(resolveEffectiveAllocation({ releases: {} }, '11').source, 'none');
+  assert.equal(resolveEffectiveAllocation(undefined, '11').allocation, null);
+});
+
+test('an explicit empty override still beats the default (deliberate "no targets")', () => {
+  const bucket = { default: { alloc: { 1: 50 } }, releases: { 10: { alloc: {} } } };
+  assert.equal(resolveEffectiveAllocation(bucket, '10').source, 'override');
+});

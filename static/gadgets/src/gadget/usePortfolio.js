@@ -6,7 +6,9 @@ import { invoke } from '@forge/bridge';
 // and live actuals for just the releases currently shown. Does nothing unless
 // `enabled`, so spaces without the feature pay no cost.
 export function usePortfolio({ projectKey, enabled, releaseIds }) {
+  // Per-release overrides, and the space default every other release falls back to.
   const [allocations, setAllocations] = useState({});
+  const [defaultAllocation, setDefaultAllocation] = useState(null);
   const [options, setOptions] = useState([]);
   const [optionsLoaded, setOptionsLoaded] = useState(false);
   const [optionsError, setOptionsError] = useState(null);
@@ -22,6 +24,7 @@ export function usePortfolio({ projectKey, enabled, releaseIds }) {
     const res = await invoke('getPortfolioAllocations', { projectKey });
     if (res.error) { setError(res.error); return; }
     setAllocations(res.releases ?? {});
+    setDefaultAllocation(res.default ?? null);
     setFieldId(res.fieldId ?? null);
   }, [projectKey]);
 
@@ -86,9 +89,23 @@ export function usePortfolio({ projectKey, enabled, releaseIds }) {
     return res;
   }, [projectKey, loadAllocations]);
 
+  // Drops a release's own allocation so it follows the space default again.
+  const reset = useCallback(async (releaseId, expectedUpdatedAt) => {
+    const res = await invoke('setPortfolioAllocation', { projectKey, releaseId, reset: true, expectedUpdatedAt: expectedUpdatedAt ?? null });
+    if (res.conflict) await loadAllocations();
+    else if (res.ok) {
+      setAllocations(cur => {
+        const next = { ...cur };
+        delete next[releaseId];
+        return next;
+      });
+    }
+    return res;
+  }, [projectKey, loadAllocations]);
+
   return {
-    allocations, options, optionsLoaded, optionsError,
+    allocations, defaultAllocation, options, optionsLoaded, optionsError,
     actuals, actualsLoading, error,
-    save, refreshActuals: () => loadActuals(true),
+    save, reset, refreshActuals: () => loadActuals(true),
   };
 }

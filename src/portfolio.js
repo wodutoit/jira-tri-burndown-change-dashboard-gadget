@@ -195,4 +195,13 @@ function mergeSpaceDistributions(items) {
   };
 }
 
-module.exports = { validateAllocation, aggregateActuals, mergeSpaceDistributions, round1, MAX_OPTIONS, DEFAULT_UNESTIMATED_SP };
+// Which allocation applies to a release: its own override if it has one, else the
+// space default, else none. `bucket` is the current field's { default, releases }.
+function resolveEffectiveAllocation(bucket, releaseId) {
+  const override = bucket?.releases?.[releaseId] ?? null;
+  if (override) return { allocation: override, source: 'override' };
+  if (bucket?.default) return { allocation: bucket.default, source: 'default' };
+  return { allocation: null, source: 'none' };
+}
+
+module.exports = { validateAllocation, aggregateActuals, mergeSpaceDistributions, resolveEffectiveAllocation, round1, MAX_OPTIONS, DEFAULT_UNESTIMATED_SP };

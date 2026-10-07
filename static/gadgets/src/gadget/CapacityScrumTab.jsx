@@ -61,6 +61,21 @@ export default function CapacityScrumTab({
     }
   };
 
+  // Reset to default: delete this release's own allocation so it follows the
+  // space default again. Same conflict handling as a save.
+  const handleResetPortfolio = async ({ expectedUpdatedAt }) => {
+    setPortfolioSaving(true);
+    setPortfolioError(null);
+    try {
+      const res = await portfolio.reset(portfolioReleaseId, expectedUpdatedAt);
+      if (res.ok) { setPortfolioReleaseId(null); return; }
+      setPortfolioError(res.error || 'Reset failed.');
+    } finally {
+      setPortfolioSaving(false);
+    }
+  };
+
+  // The release's OWN allocation (null while it follows the space default).
   const portfolioDialogAllocation = portfolioReleaseId ? (portfolio.allocations[portfolioReleaseId] ?? null) : null;
   const portfolioDialogRelease = portfolioReleaseId ? releaseOptions.find(v => v.id === portfolioReleaseId) : null;
 
@@ -194,21 +209,24 @@ export default function CapacityScrumTab({
         <PortfolioDialog
           // Remounts on a different release or when the stored version changes
           // (e.g. after a conflict reload) so inputs and loadedUpdatedAt stay in step.
-          key={`${portfolioReleaseId}:${portfolioDialogAllocation?.updatedAt ?? 'none'}`}
+          key={`${portfolioReleaseId}:${portfolioDialogAllocation?.updatedAt ?? 'none'}:${portfolio.defaultAllocation?.updatedAt ?? 'none'}`}
           releaseName={portfolioDialogRelease?.name ?? '(deleted release)'}
           model={buildPortfolioRows({
             options: portfolio.options,
             optionsLoaded: portfolio.optionsLoaded,
-            allocation: portfolioDialogAllocation,
+            allocation: portfolioDialogAllocation ?? portfolio.defaultAllocation ?? null,
+            isDefault: !portfolioDialogAllocation,
             actuals: portfolio.actuals[portfolioReleaseId] ?? null,
             historical: !!portfolioDialogRelease?.released,
             thresholds: portfolioThresholds,
           })}
           loadedUpdatedAt={portfolioDialogAllocation?.updatedAt ?? null}
+          hasDefault={!!portfolio.defaultAllocation}
           saving={portfolioSaving}
           error={portfolioError}
           optionsError={portfolio.optionsError}
           onSave={handleSavePortfolio}
+          onReset={handleResetPortfolio}
           onCancel={() => setPortfolioReleaseId(null)}
         />
       )}
