@@ -94,9 +94,21 @@ function OverlayLines({ capPct, thresholdPct, thresholdLabel }) {
 // space can configure its own %; "By release" mode's items all share one
 // project's single threshold %, so the same aggregate formula reduces to
 // that exact value there — no special-casing needed for that mode either.
+// Tickets with no estimate carry 0 SP, so they can't be sized from data. They're
+// drawn as a blue segment stacked on the committed fill at a placeholder of 1 SP
+// per ticket — display only: the label, % and OK/FILLING/OVER status all stay on
+// the real Total Committed (matching the Capacity page).
+const UNESTIMATED_SP_EACH = 1;
+const UNEST_FILL = 'var(--brand)';
+const UNEST_HATCH = 'repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 3px, transparent 3px 6px)';
+const unestTip = (n) => `${n} committed ticket${n === 1 ? ' has' : 's have'} no estimate. Shown as ${UNESTIMATED_SP_EACH} SP each for scale only — not included in Committed, the % or the status.`;
+
 function BarColumns({ items }) {
   const pctOfCapacity = (item) => (item.totalCapacity ? (item.totalCommitted / item.totalCapacity) * 100 : 0);
-  const scaleMax = Math.max(100, ...items.map(pctOfCapacity)) * 1.15;
+  const unestPctOfCapacity = (item) => (item.totalCapacity && item.unestimatedCount > 0
+    ? ((item.unestimatedCount * UNESTIMATED_SP_EACH) / item.totalCapacity) * 100 : 0);
+  const scaleMax = Math.max(100, ...items.map(it => pctOfCapacity(it) + unestPctOfCapacity(it))) * 1.15;
+  const anyUnestimated = items.some(it => it.unestimatedCount > 0);
 
   const withCapacity = items.filter(it => it.totalCapacity > 0);
   const aggCapacity = withCapacity.reduce((s, it) => s + it.totalCapacity, 0);
@@ -107,6 +119,7 @@ function BarColumns({ items }) {
   const thresholdLinePct = thresholdPctValue != null ? (thresholdPctValue / scaleMax) * 100 : null;
 
   return (
+    <>
     <div style={{ position: 'relative', display: 'flex', gap: 16, alignItems: 'flex-start', padding: '20px 4px 0' }}>
       <OverlayLines
         capPct={capLinePct} thresholdPct={thresholdLinePct}
@@ -117,6 +130,8 @@ function BarColumns({ items }) {
         const ownPct = pctOfCapacity(item);
         const heightPct = item.totalCapacity ? Math.min(100, (ownPct / scaleMax) * 100) : 0;
         const pct = item.totalCapacity ? Math.round(ownPct) : null;
+        // Blue segment sits on top of the committed fill, clipped to the track.
+        const unestHeightPct = Math.min(100 - heightPct, (unestPctOfCapacity(item) / scaleMax) * 100);
 
         return (
           <div key={item.key} style={{
@@ -128,10 +143,22 @@ function BarColumns({ items }) {
               border: '1px solid var(--border)', background: 'var(--surface-sunken)',
             }}>
               {item.totalCapacity > 0 ? (
-                <div style={{
-                  position: 'absolute', left: 0, right: 0, bottom: 0, height: `${heightPct}%`,
-                  background: TIER_FILL[tier], borderRadius: '3px 3px 0 0',
-                }} />
+                <>
+                  <div style={{
+                    position: 'absolute', left: 0, right: 0, bottom: 0, height: `${heightPct}%`,
+                    background: TIER_FILL[tier], borderRadius: '3px 3px 0 0',
+                  }} />
+                  {item.unestimatedCount > 0 && unestHeightPct > 0 && (
+                    <div
+                      title={unestTip(item.unestimatedCount)}
+                      aria-label={unestTip(item.unestimatedCount)}
+                      style={{
+                        position: 'absolute', left: 0, right: 0, bottom: `${heightPct}%`, height: `${unestHeightPct}%`,
+                        background: UNEST_FILL, backgroundImage: UNEST_HATCH, borderRadius: '3px 3px 0 0',
+                      }}
+                    />
+                  )}
+                </>
               ) : (
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 6 }}>
                   <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-subtlest)' }}>no capacity set</span>
@@ -154,11 +181,23 @@ function BarColumns({ items }) {
                 {item.totalCapacity ? `${item.totalCommitted} / ${item.totalCapacity} pts · ${pct}%` : `${item.totalCommitted} pts · no cap`}
               </span>
               {item.sublabel && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{item.sublabel}</span>}
+              {item.unestimatedCount > 0 && (
+                <span title={unestTip(item.unestimatedCount)} style={{ fontSize: 10, fontWeight: 700, color: 'var(--info-text)' }}>
+                  {item.unestimatedCount} ticket{item.unestimatedCount === 1 ? '' : 's'} without estimates
+                </span>
+              )}
             </div>
           </div>
         );
       })}
     </div>
+    {anyUnestimated && (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 4px 0', fontSize: 10, color: 'var(--text-subtlest)' }}>
+        <span aria-hidden="true" style={{ display: 'inline-block', width: 12, height: 10, borderRadius: 2, background: UNEST_FILL, backgroundImage: UNEST_HATCH }} />
+        Committed tickets with no estimate — shown as {UNESTIMATED_SP_EACH} SP each for scale only, not counted in Committed or the status.
+      </div>
+    )}
+    </>
   );
 }
 
@@ -168,6 +207,7 @@ function buildBySpaceItems(results) {
     key: r.projectKey, label: r.name, sublabel: r.releaseName,
     totalCommitted: r.totalCommitted, totalCapacity: r.totalCapacity,
     thresholdSp: r.thresholdSp, thresholdPct: r.thresholdPct,
+    unestimatedCount: r.unestimatedCount || 0,
   }));
   if (items.length > 1) {
     const totalCapacity = ok.reduce((s, r) => s + r.totalCapacity, 0);
@@ -176,6 +216,8 @@ function buildBySpaceItems(results) {
       key: '__total', label: 'Total', isTotal: true,
       totalCommitted: ok.reduce((s, r) => s + r.totalCommitted, 0),
       totalCapacity, thresholdSp,
+      // Sum across spaces (each space's own count is already de-duplicated within it).
+      unestimatedCount: ok.reduce((s, r) => s + (r.unestimatedCount || 0), 0),
       // Blended % across every space, for the Total bar's own OK/FILLING/
       // OVER chip — not any single space's individual threshold setting.
       thresholdPct: totalCapacity > 0 ? Math.round((thresholdSp / totalCapacity) * 100) : null,
@@ -189,6 +231,7 @@ function buildByReleaseItems(results) {
     key: r.releaseId, label: r.releaseName, sublabel: fmtDate(r.releaseDate),
     totalCommitted: r.totalCommitted, totalCapacity: r.totalCapacity,
     thresholdSp: r.thresholdSp, thresholdPct: r.thresholdPct,
+    unestimatedCount: r.unestimatedCount || 0,
     topChip: i === 0
       ? { label: 'CURRENT', bg: 'var(--info-bg)', text: 'var(--info-text)' }
       : { label: 'FUTURE', bg: 'var(--lz-n-bg)', text: 'var(--lz-n-text)' },

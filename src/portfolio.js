@@ -125,27 +125,23 @@ function aggregateActuals(issues, { spFieldId, fieldId, defaultSp = DEFAULT_UNES
 // sprint, so each sprint's category split is saved with it ("Get SP Count") and
 // summed here.
 
-// Kept small: every sprint's split lives in one per-space `capacity-rows` value
-// (Forge caps a single value), so a long-running space with many sprints must stay
-// well under it. Beyond the cap only the COUNT is kept (see noEstimateCount).
+// Kept small: every sprint's saved data lives in one per-space `capacity-rows`
+// value (Forge caps a single value), so a long-running space with many sprints
+// must stay well under it. Beyond the cap only the COUNT is kept.
 const MAX_SPLIT_NO_ESTIMATE_KEYS = 50;
 
 // One sprint's category split of the tickets that make up its committed SP.
-//  entries  [{ key, sp, hasEstimate, option: { id, value|name } | null }]
-// Returns what's stored on the sprint's capacity row. `noEstimateKeys` (capped)
-// is kept only so tickets spanning several sprints are counted once in the
-// "no estimate" tally; SP is deliberately NOT deduped (see aggregateCommittedSplits).
+//  entries  [{ key, sp, option: { id, value|name } | null }]
+// Returns what's stored on the sprint's capacity row. SP is deliberately NOT
+// deduped across sprints (see aggregateCommittedSplits). The "no estimate" list
+// is NOT part of the split: it's saved separately for every space
+// (`committedNoEstimate`, see summarizeNoEstimate) and shared by Portfolio and the
+// Release Capacity gadget, so there is one source for it.
 function buildCommittedSplit(entries, fieldId) {
   const categories = {};
   let unassigned = 0;
-  const noEstimateKeys = [];
-  let noEstimateCount = 0;
   for (const e of entries || []) {
     const sp = Number.isFinite(e.sp) ? Math.max(0, e.sp) : 0;
-    if (!e.hasEstimate) {
-      noEstimateCount++;
-      if (noEstimateKeys.length < MAX_SPLIT_NO_ESTIMATE_KEYS) noEstimateKeys.push(e.key);
-    }
     const id = e.option && e.option.id != null ? String(e.option.id) : null;
     if (id == null) unassigned += sp;
     else {
@@ -155,7 +151,31 @@ function buildCommittedSplit(entries, fieldId) {
   }
   const out = {};
   for (const [id, c] of Object.entries(categories)) out[id] = { name: c.name, sp: round1(c.sp) };
-  return { fieldId, categories: out, unassigned: round1(unassigned), noEstimateKeys, noEstimateCount };
+  return { fieldId, categories: out, unassigned: round1(unassigned) };
+}
+
+// Committed tickets with no estimate for one sprint, saved on its capacity row
+// whether or not Portfolio Planning is on (the Release Capacity gadget shows it).
+// Keys are capped (storage); beyond the cap only the count is kept.
+function summarizeNoEstimate(keys) {
+  const list = keys || [];
+  return { count: list.length, keys: list.slice(0, MAX_SPLIT_NO_ESTIMATE_KEYS) };
+}
+
+// Tickets without an estimate across a release's rows. A ticket carried over
+// into several of the release's sprints is counted once (by key) up to the key
+// cap; overflow past the cap can only be counted, not deduped.
+function countNoEstimate(rows) {
+  const seen = new Set();
+  let overflow = 0;
+  for (const r of rows || []) {
+    const n = r.committedNoEstimate;
+    if (!n) continue;
+    const keys = n.keys || [];
+    for (const k of keys) seen.add(k);
+    overflow += Math.max(0, (n.count ?? keys.length) - keys.length);
+  }
+  return seen.size + overflow;
 }
 
 // Sums the saved splits of a release's sprints. Matches Capacity's Total
@@ -167,8 +187,7 @@ function buildCommittedSplit(entries, fieldId) {
 // the UI can say why. A split bigger than the committed figure is clamped.
 function aggregateCommittedSplits(rows, fieldId) {
   const categories = {};
-  let totalSp = 0, unassignedSp = 0, sprintsMissingSplit = 0, sprintsNotCounted = 0, noEstimateOverflow = 0;
-  const noEstimate = new Set();
+  let totalSp = 0, unassignedSp = 0, sprintsMissingSplit = 0, sprintsNotCounted = 0;
 
   for (const r of rows || []) {
     // null/blank = Committed was never counted for this sprint (its capacity
@@ -193,10 +212,6 @@ function aggregateCommittedSplits(rows, fieldId) {
     unassignedSp += Math.max(0, split.unassigned || 0);
     // Anything committed that the split doesn't account for stays visible.
     unassignedSp += Math.max(0, committed - splitTotal);
-    const keys = split.noEstimateKeys || [];
-    for (const k of keys) noEstimate.add(k);
-    // Tickets past the stored-key cap can't be deduped, only counted.
-    noEstimateOverflow += Math.max(0, (split.noEstimateCount ?? keys.length) - keys.length);
   }
 
   const out = {};
@@ -205,7 +220,8 @@ function aggregateCommittedSplits(rows, fieldId) {
     totalSp: round1(totalSp),
     categories: out,
     unassigned: { sp: round1(unassignedSp) },
-    unestimatedCount: noEstimate.size + noEstimateOverflow,
+    // Same saved data and counting rule the Release Capacity gadget uses.
+    unestimatedCount: countNoEstimate(rows),
     sprintCount: (rows || []).length,
     sprintsMissingSplit,
     sprintsNotCounted,
@@ -301,4 +317,4 @@ function resolveEffectiveAllocation(bucket, releaseId) {
   return { allocation: null, source: 'none' };
 }
 
-module.exports = { validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, mergeSpaceDistributions, resolveEffectiveAllocation, round1, MAX_OPTIONS, DEFAULT_UNESTIMATED_SP };
+module.exports = { validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, summarizeNoEstimate, countNoEstimate, mergeSpaceDistributions, resolveEffectiveAllocation, round1, MAX_OPTIONS, DEFAULT_UNESTIMATED_SP };

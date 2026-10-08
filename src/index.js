@@ -2,7 +2,7 @@ const Resolver = require('@forge/resolver').default;
 const { route, asUser } = require('@forge/api');
 const { kvs } = require('@forge/kvs');
 const crypto = require('crypto');
-const { validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, mergeSpaceDistributions, resolveEffectiveAllocation } = require('./portfolio');
+const { validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, summarizeNoEstimate, countNoEstimate, mergeSpaceDistributions, resolveEffectiveAllocation } = require('./portfolio');
 
 const resolver = new Resolver();
 
@@ -459,6 +459,9 @@ async function extractRawSprintData(sprintId, issues, spFieldId) {
     const own = issue.fields?.[spFieldId];
     const sp = typeof own === 'number' ? own : 0;
     const hasEstimate = typeof own === 'number';
+    // Sub-tasks rarely carry their own estimate (the parent does), so "no
+    // estimate" is not meaningful for them and they're left out of that count.
+    const isSubtask = !!issue.fields?.issuetype?.subtask;
     const transitions = [];
     const sprintEvents = [];
 
@@ -484,6 +487,7 @@ async function extractRawSprintData(sprintId, issues, spFieldId) {
     issueData[issue.key] = {
       sp,
       hasEstimate,
+      isSubtask,
       summary: issue.fields?.summary ?? '',
       created: issue.fields?.created ?? null,
       currentStatus: issue.fields?.status?.name ?? null,
@@ -495,7 +499,7 @@ async function extractRawSprintData(sprintId, issues, spFieldId) {
 }
 
 async function getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh }) {
-  const cacheKey = `raw-v3:${sprint.id}:${spFieldId}`; // v3: Epics excluded + per-issue hasEstimate
+  const cacheKey = `raw-v4:${sprint.id}:${spFieldId}`; // v4: Epics excluded + per-issue hasEstimate/isSubtask
 
   if (!forceRefresh) {
     try {
@@ -1640,6 +1644,8 @@ async function fetchMappedScrumSprints(board, projectKey) {
   const tag = (list, state) => list.map(s => ({
     id: s.id, state, releaseId: overrides[s.id]?.releaseId ?? null, capacitySp: overrides[s.id]?.capacitySp ?? null,
     committedSp: overrides[s.id]?.committedSp ?? null, committedSplit: overrides[s.id]?.committedSplit ?? null,
+    // The no-estimate list the portfolio's count is read from (see countNoEstimate).
+    committedNoEstimate: overrides[s.id]?.committedNoEstimate ?? null,
   }));
   return [...tag(active, 'active'), ...tag(future, 'future'), ...tag(closed, 'closed')];
 }
@@ -1770,7 +1776,6 @@ async function buildSprintCommittedSplit(projectKey, sprintId, issueData, commit
     committedKeys.map(key => ({
       key,
       sp: issueData[key]?.sp || 0,
-      hasEstimate: issueData[key]?.hasEstimate !== false,
       option: options.get(key) ?? null,
     })),
     settings.portfolioFieldId
@@ -2012,7 +2017,10 @@ function rollupForVersion(rows, targetVersion, settings) {
   const totalCapacity = mapped.reduce((a, r) => a + numOr(r.capacitySp, settings.baseCapacitySp), 0);
   const totalCommitted = mapped.reduce((a, r) => a + numOr(r.committedSp, 0), 0);
   const thresholdSp = totalCapacity * (settings.releaseThresholdPct / 100);
-  return { totalCapacity, totalCommitted, thresholdSp, thresholdPct: settings.releaseThresholdPct };
+  // Committed tickets with no estimate (Scrum rows that have been counted since
+  // this was added; Kanban iterations and older rows simply report 0).
+  const unestimatedCount = countNoEstimate(mapped);
+  return { totalCapacity, totalCommitted, thresholdSp, thresholdPct: settings.releaseThresholdPct, unestimatedCount };
 }
 
 // Names for the Release dropdown: every unreleased release, always, plus only
@@ -2352,6 +2360,12 @@ resolver.define('getSprintCommittedSp', async ({ payload }) => {
       committedKeys = Object.keys(initialCommitted);
     }
 
+    // Which committed tickets have no estimate — saved with the number (for any
+    // space, not only Portfolio ones) so the Release Capacity gadget can flag it.
+    const committedNoEstimate = summarizeNoEstimate(
+      committedKeys.filter(k => issueDataForSplit[k]?.hasEstimate === false && !issueDataForSplit[k]?.isSubtask)
+    );
+
     // Save the category split with the number, so Portfolio can break Total
     // Committed down by category. A failed lookup must not block the count
     // itself — the row just has no split (shown as Unassigned until recounted).
@@ -2362,7 +2376,7 @@ resolver.define('getSprintCommittedSp', async ({ payload }) => {
     } catch (e) {
       splitError = e.message;
     }
-    await updateCapacityRow(projectKey, sprintId, { committedSp, committedAt: new Date().toISOString(), committedSplit });
+    await updateCapacityRow(projectKey, sprintId, { committedSp, committedAt: new Date().toISOString(), committedSplit, committedNoEstimate });
     return { committedSp, ...(splitError ? { splitError } : {}) };
   } catch (e) {
     return { error: e.message };
@@ -2379,6 +2393,7 @@ resolver.define('setSprintCommittedSp', async ({ payload }) => {
       committedSp: committedSp == null ? null : Number(committedSp),
       committedAt: new Date().toISOString(),
       committedSplit: null,
+      committedNoEstimate: null,
     });
     return { ok: true };
   } catch (e) {

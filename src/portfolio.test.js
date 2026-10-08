@@ -125,16 +125,16 @@ test('epics listed in skipKeys (epics with children) are ignored; other epics co
 });
 
 // ── committed-basis splits ───────────────────────────────────────────────────
-const { buildCommittedSplit, aggregateCommittedSplits } = require('./portfolio');
-const entry = (key, sp, cat, hasEstimate = true) => ({ key, sp, hasEstimate, option: cat == null ? null : { id: cat, value: `Cat ${cat}` } });
+const { buildCommittedSplit, aggregateCommittedSplits, summarizeNoEstimate } = require('./portfolio');
+const entry = (key, sp, cat) => ({ key, sp, option: cat == null ? null : { id: cat, value: `Cat ${cat}` } });
 
-test('buildCommittedSplit buckets SP per category and Unassigned, tracking no-estimate keys', () => {
-  const s = buildCommittedSplit([entry('A-1', 5, '1'), entry('A-2', 3, '1'), entry('A-3', 2, '2'), entry('A-4', 4, null), entry('A-5', 0, '1', false)], CAT);
+test('buildCommittedSplit buckets SP per category and Unassigned', () => {
+  const s = buildCommittedSplit([entry('A-1', 5, '1'), entry('A-2', 3, '1'), entry('A-3', 2, '2'), entry('A-4', 4, null)], CAT);
   assert.equal(s.fieldId, CAT);
   assert.equal(s.categories['1'].sp, 8);
   assert.equal(s.categories['2'].sp, 2);
   assert.equal(s.unassigned, 4);
-  assert.deepEqual(s.noEstimateKeys, ['A-5']);
+  assert.equal(s.noEstimateKeys, undefined); // no-estimate data lives in committedNoEstimate, not the split
 });
 
 test('aggregateCommittedSplits sums rows without deduping carry-overs, so the total equals Total Committed', () => {
@@ -171,19 +171,29 @@ test('committed SP not covered by the split stays visible as Unassigned; an over
   assert.equal(r.categories['1'].sp, 10);
 });
 
-test('no-estimate tickets are counted once across sprints', () => {
-  const split = buildCommittedSplit([entry('A-1', 0, '1', false)], CAT);
-  const r = aggregateCommittedSplits([{ committedSp: 0, committedSplit: split }, { committedSp: 0, committedSplit: split }], CAT);
+test('no-estimate tickets come from committedNoEstimate (shared with Release Capacity), once across sprints, even without a split', () => {
+  const ne = summarizeNoEstimate(['A-1']);
+  const r = aggregateCommittedSplits([{ committedSp: 0, committedNoEstimate: ne }, { committedSp: 0, committedNoEstimate: ne }], CAT);
   assert.equal(r.unestimatedCount, 1);
 });
 
 test('sprints never counted are reported separately; overflow no-estimate tickets are still counted', () => {
-  const many = Array.from({ length: 60 }, (_, i) => entry(`A-${i}`, 0, '1', false));
-  const split = buildCommittedSplit(many, CAT);
-  assert.equal(split.noEstimateKeys.length, 50);
-  assert.equal(split.noEstimateCount, 60);
-  const r = aggregateCommittedSplits([{ committedSp: 0, committedSplit: split }, { committedSp: null }, { committedSp: 5 }], CAT);
+  const ne = summarizeNoEstimate(Array.from({ length: 60 }, (_, i) => `A-${i}`));
+  assert.equal(ne.keys.length, 50);
+  assert.equal(ne.count, 60);
+  const r = aggregateCommittedSplits([{ committedSp: 0, committedNoEstimate: ne }, { committedSp: null }, { committedSp: 5 }], CAT);
   assert.equal(r.sprintsNotCounted, 1);
   assert.equal(r.unestimatedCount, 60);
   assert.equal(r.sprintsMissingSplit, 1); // the 5 SP row has no split
+});
+
+test('countNoEstimate counts a carried-over ticket once, and keeps overflow beyond the key cap', () => {
+  const { summarizeNoEstimate, countNoEstimate } = require('./portfolio');
+  const a = summarizeNoEstimate(['A-1', 'A-2']);
+  const b = summarizeNoEstimate(['A-2', 'A-3']); // A-2 carried over
+  assert.equal(countNoEstimate([{ committedNoEstimate: a }, { committedNoEstimate: b }, {}]), 3);
+  const big = summarizeNoEstimate(Array.from({ length: 60 }, (_, i) => `B-${i}`));
+  assert.equal(big.keys.length, 50);
+  assert.equal(countNoEstimate([{ committedNoEstimate: big }]), 60);
+  assert.equal(countNoEstimate([]), 0);
 });
