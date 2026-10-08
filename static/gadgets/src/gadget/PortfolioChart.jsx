@@ -1,6 +1,6 @@
 import React from 'react';
 import { PieChart, Pie, Cell, Tooltip } from 'recharts';
-import { buildPortfolioRows, fmtPct, rowTooltip, STATUS_WORD } from './portfolioModel';
+import { buildPortfolioRows, fmtPct, rowTooltip, portfolioNotes, STATUS_WORD } from './portfolioModel';
 import { portfolioBands } from './gadgetUtils';
 
 // Category identity colours. Status (green/orange/red) is NEVER used to colour a
@@ -32,7 +32,12 @@ export function modelFor(data) {
   return buildPortfolioRows({
     options: [], optionsLoaded: false,
     allocation: data.hasAllocation ? { alloc: data.alloc, names: data.names } : null,
-    actuals: { totalSp: data.totalSp, categories: data.categories, unassigned: data.unassigned, unestimatedCount: data.unestimatedCount, sprintCount: data.sprintCount },
+    actuals: {
+      totalSp: data.totalSp, categories: data.categories, unassigned: data.unassigned,
+      unestimatedCount: data.unestimatedCount, sprintCount: data.sprintCount,
+      totalCapacity: data.totalCapacity, basis: data.basis,
+      sprintsMissingSplit: data.sprintsMissingSplit, sprintsNotCounted: data.sprintsNotCounted,
+    },
     thresholds: data.thresholds,
   });
 }
@@ -68,7 +73,7 @@ function Donut({ model, colorFor }) {
         ...rows.filter(r => r.actualSp > 0).map(r => ({ name: r.name, value: r.actualSp, fill: colorFor(r.name), tip: rowTooltip(r, totalSp) })),
         ...(unassigned.actualSp > 0 ? [{ name: 'Unassigned', value: unassigned.actualSp, fill: UNASSIGNED_COLOR, tip: `Unassigned\nActual: ${fmtPct(unassigned.actualPct)} (${unassigned.actualSp} of ${totalSp} SP)\nTarget: 0%\nStatus: ${STATUS_WORD[unassigned.status]}` }] : []),
       ]
-    : [{ name: 'No tickets yet', value: 1, fill: NEUTRAL, tip: 'No tickets in this release\'s sprints yet' }];
+    : [{ name: 'No data yet', value: 1, fill: NEUTRAL, tip: model.basis === 'committed' ? 'No committed story points in this release\'s sprints yet' : 'No tickets in this release\'s sprints yet' }];
 
   const targetData = hasSaved
     ? [
@@ -103,13 +108,16 @@ function Donut({ model, colorFor }) {
 // so how far out of range a category is reads without doing arithmetic. Worst
 // first; Unassigned last.
 function Bullets({ model, thresholds }) {
-  const { rows, unassigned, hasActuals, hasSaved, totalSp } = model;
+  const { rows, unassigned, hasActuals, hasSaved, totalSp, totalCapacity, capacityBased } = model;
+  // On the committed basis a bar is committed SP as a % of Total Capacity (what
+  // the status is judged on); otherwise it's the category's share of the total.
+  const shown = (r) => (capacityBased ? (r.actualSp / totalCapacity) * 100 : (r.actualPct ?? 0));
   const list = rows
     .filter(r => r.target > 0 || r.actualSp > 0)
     .sort((a, b) => (STATUS_RANK[a.status] - STATUS_RANK[b.status])
-      || (Math.abs((b.actualPct ?? 0) - b.target) - Math.abs((a.actualPct ?? 0) - a.target)));
+      || (Math.abs(shown(b) - b.target) - Math.abs(shown(a) - a.target)));
   const all = unassigned.actualSp > 0 ? [...list, { ...unassigned, name: 'Unassigned' }] : list;
-  const axisMax = Math.max(10, ...all.map(r => Math.max(r.actualPct ?? 0, r.target))) * 1.15;
+  const axisMax = Math.max(10, ...all.map(r => Math.max(shown(r), r.target))) * 1.15;
   const at = (pct) => `${Math.max(0, Math.min(100, (pct / axisMax) * 100))}%`;
 
   return (
@@ -122,14 +130,16 @@ function Bullets({ model, thresholds }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11 }}>
               <span style={{ fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--text-subtle)', fontVariantNumeric: 'tabular-nums', flex: 'none' }}>
-                {hasActuals ? fmtPct(r.actualPct) : '—'} vs {hasSaved ? fmtPct(r.target) : '—'} <StatusDot status={r.status} />
+                {capacityBased
+                  ? `${hasActuals ? `${r.actualSp} SP` : '—'} vs ${hasSaved ? `${r.targetSp ?? 0} SP` : '—'}`
+                  : `${hasActuals ? fmtPct(r.actualPct) : '—'} vs ${hasSaved ? fmtPct(r.target) : '—'}`} <StatusDot status={r.status} />
               </span>
             </div>
             <div style={{ position: 'relative', height: 14, borderRadius: 3, background: 'var(--surface-sunken)', border: '1px solid var(--border)' }}>
               {bands && <div style={{ position: 'absolute', top: 0, bottom: 0, ...band(bands.criticalPp), background: 'var(--filling-bg)' }} />}
               {bands && <div style={{ position: 'absolute', top: 0, bottom: 0, ...band(bands.warnPp), background: 'var(--ok-bg)' }} />}
               {hasActuals && (
-                <div style={{ position: 'absolute', left: 0, top: 3, bottom: 3, width: at(r.actualPct ?? 0), background: STATUS_FILL[r.status], borderRadius: 2, opacity: 0.95 }} />
+                <div style={{ position: 'absolute', left: 0, top: 3, bottom: 3, width: at(shown(r)), background: STATUS_FILL[r.status], borderRadius: 2, opacity: 0.95 }} />
               )}
               {hasSaved && r.target > 0 && (
                 <div style={{ position: 'absolute', top: -2, bottom: -2, left: at(r.target), width: 2, marginLeft: -1, background: 'var(--text)' }} />
@@ -164,7 +174,7 @@ function LegendTable({ model, colorFor }) {
               <span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 2, background: colorFor(r.name), marginRight: 6 }} />{r.name}
             </td>
             <td style={{ ...cell, textAlign: 'right' }}>{hasActuals ? `${fmtPct(r.actualPct)} · ${r.actualSp} SP` : '—'}</td>
-            <td style={{ ...cell, textAlign: 'right' }}>{hasSaved ? fmtPct(r.target) : '—'}</td>
+            <td style={{ ...cell, textAlign: 'right' }}>{hasSaved ? `${fmtPct(r.target)}${r.targetSp != null ? ` · ${r.targetSp} SP` : ''}` : '—'}</td>
             <td style={cell}><StatusDot status={r.status} /></td>
           </tr>
         ))}
@@ -205,7 +215,8 @@ export default function PortfolioChart({ title, subtitle, badge, data, chartStyl
       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 2 }}>
         {!model.hasSaved && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>No portfolio allocation set for this release — showing actuals only.</span>}
         {model.hasSaved && data.usesDefault && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>Target is the space's default distribution.</span>}
-        {model.unestimatedCount > 0 && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{model.unestimatedCount} unestimated ticket{model.unestimatedCount === 1 ? '' : 's'} counted as 1 SP each</span>}
+        {model.capacityBased && model.hasSaved && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>Target SP = target % of Total Capacity ({model.totalCapacity} SP); actual = Total Committed ({model.totalSp} SP).</span>}
+        {portfolioNotes(model).map((n, i) => <span key={`n${i}`} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>)}
         {notes.map((n, i) => <span key={i} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>)}
       </div>
     </div>

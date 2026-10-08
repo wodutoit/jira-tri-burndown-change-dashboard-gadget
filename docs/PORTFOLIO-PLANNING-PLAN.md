@@ -143,3 +143,18 @@ tested without Jira; the repo has no test runner yet (proposal: Vitest for just 
 - Update `PRIVACY.md` (new KVS key, new field read) and re-check `.claude/MARKETPLACE-APPROVAL-GUIDELINES.md`
   (gadget description must match behaviour; screenshots/icon).
 - Commits: `[AI: Claude – portfolio planning]`.
+
+## Committed basis (measure by Total Committed)
+
+- Actuals default to Capacity's **Total Committed**, not a live scan: each sprint's "Get SP Count" also saves a category
+  split (`committedSplit` on its `capacity-rows` row: per-option SP, Unassigned SP, and the keys of tickets with no
+  estimate). Splits are summed per release **without deduping carry-overs** (same as Total Committed), so the portfolio
+  total equals the Capacity table's Total Committed.
+- Targets are a % of the release's **Total Capacity**; status compares each category's committed SP with that target SP.
+  Percent labels remain a share of Total Committed.
+- A sprint with committed SP but no usable split (not recounted yet, hand-typed, or the portfolio field changed) counts
+  wholly as Unassigned and is flagged ("N sprints have no category breakdown"). Typing a Committed value clears that
+  sprint's split. Re-click Get SP Count to fill it in.
+- Unestimated tickets count **0 SP** (previously 1) and are only counted/reported.
+- The gadget (and its Edit default) has a "Measure by" switch: Total Committed (default) or Current sprint contents (the
+  old live scan). The Capacity page always uses Total Committed.

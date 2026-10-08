@@ -69,16 +69,17 @@ test('sums story points per category and an Unassigned bucket', () => {
   assert.equal(r.totalSp, 14);
 });
 
-test('a ticket with no estimate counts as 1 SP and is reported', () => {
+test('a ticket with no estimate counts as 0 SP and is reported', () => {
   const r = aggregateActuals([issue('A-1', null, '1'), issue('A-2', undefined, '1'), issue('A-3', 5, '1')], opts);
-  assert.equal(r.categories['1'].sp, 7);
+  assert.equal(r.categories['1'].sp, 5);
+  assert.equal(r.categories['1'].issueCount, 3);
   assert.equal(r.categories['1'].unestimatedCount, 2);
   assert.equal(r.unestimatedCount, 2);
 });
 
-test('an unestimated ticket with no category lands in Unassigned as 1 SP', () => {
+test('an unestimated ticket with no category lands in Unassigned as 0 SP', () => {
   const r = aggregateActuals([issue('A-1', null)], opts);
-  assert.equal(r.unassigned.sp, 1);
+  assert.equal(r.unassigned.sp, 0);
   assert.equal(r.unassigned.unestimatedCount, 1);
 });
 
@@ -121,4 +122,68 @@ test('epics listed in skipKeys (epics with children) are ignored; other epics co
   const r = aggregateActuals([withChildren, childless, child], { ...opts, skipKeys: new Set(['E-1']) });
   assert.equal(r.categories['1'].sp, 13); // childless epic 8 + child 5, not the 13-pt epic
   assert.equal(r.issueCount, 2);
+});
+
+// ── committed-basis splits ───────────────────────────────────────────────────
+const { buildCommittedSplit, aggregateCommittedSplits } = require('./portfolio');
+const entry = (key, sp, cat, hasEstimate = true) => ({ key, sp, hasEstimate, option: cat == null ? null : { id: cat, value: `Cat ${cat}` } });
+
+test('buildCommittedSplit buckets SP per category and Unassigned, tracking no-estimate keys', () => {
+  const s = buildCommittedSplit([entry('A-1', 5, '1'), entry('A-2', 3, '1'), entry('A-3', 2, '2'), entry('A-4', 4, null), entry('A-5', 0, '1', false)], CAT);
+  assert.equal(s.fieldId, CAT);
+  assert.equal(s.categories['1'].sp, 8);
+  assert.equal(s.categories['2'].sp, 2);
+  assert.equal(s.unassigned, 4);
+  assert.deepEqual(s.noEstimateKeys, ['A-5']);
+});
+
+test('aggregateCommittedSplits sums rows without deduping carry-overs, so the total equals Total Committed', () => {
+  const split = buildCommittedSplit([entry('A-1', 5, '1'), entry('A-2', 3, null)], CAT);
+  const rows = [
+    { committedSp: 8, committedSplit: split },
+    { committedSp: 8, committedSplit: split }, // same tickets carried into the next sprint
+  ];
+  const r = aggregateCommittedSplits(rows, CAT);
+  assert.equal(r.totalSp, 16);
+  assert.equal(r.categories['1'].sp, 10);
+  assert.equal(r.unassigned.sp, 6);
+  assert.equal(r.sprintsMissingSplit, 0);
+});
+
+test('a row with committed SP but no usable split goes wholly to Unassigned and is flagged', () => {
+  const split = buildCommittedSplit([entry('A-1', 5, '1')], CAT);
+  const r = aggregateCommittedSplits([
+    { committedSp: 5, committedSplit: split },
+    { committedSp: 40 },                                                 // never split
+    { committedSp: 10, committedSplit: { ...split, fieldId: 'other' } }, // field changed
+    { committedSp: null },                                               // nothing committed: not "missing"
+  ], CAT);
+  assert.equal(r.totalSp, 55);
+  assert.equal(r.categories['1'].sp, 5);
+  assert.equal(r.unassigned.sp, 50);
+  assert.equal(r.sprintsMissingSplit, 2);
+});
+
+test('committed SP not covered by the split stays visible as Unassigned; an oversized split is not negative', () => {
+  const split = buildCommittedSplit([entry('A-1', 5, '1')], CAT);
+  const r = aggregateCommittedSplits([{ committedSp: 8, committedSplit: split }, { committedSp: 2, committedSplit: split }], CAT);
+  assert.equal(r.unassigned.sp, 3); // 8-5 from row 1; row 2's split (5) exceeds its committed (2) -> clamp 0
+  assert.equal(r.categories['1'].sp, 10);
+});
+
+test('no-estimate tickets are counted once across sprints', () => {
+  const split = buildCommittedSplit([entry('A-1', 0, '1', false)], CAT);
+  const r = aggregateCommittedSplits([{ committedSp: 0, committedSplit: split }, { committedSp: 0, committedSplit: split }], CAT);
+  assert.equal(r.unestimatedCount, 1);
+});
+
+test('sprints never counted are reported separately; overflow no-estimate tickets are still counted', () => {
+  const many = Array.from({ length: 60 }, (_, i) => entry(`A-${i}`, 0, '1', false));
+  const split = buildCommittedSplit(many, CAT);
+  assert.equal(split.noEstimateKeys.length, 50);
+  assert.equal(split.noEstimateCount, 60);
+  const r = aggregateCommittedSplits([{ committedSp: 0, committedSplit: split }, { committedSp: null }, { committedSp: 5 }], CAT);
+  assert.equal(r.sprintsNotCounted, 1);
+  assert.equal(r.unestimatedCount, 60);
+  assert.equal(r.sprintsMissingSplit, 1); // the 5 SP row has no split
 });

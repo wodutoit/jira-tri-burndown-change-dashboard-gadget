@@ -20,6 +20,7 @@ export default function TriPortfolioDistributionGadgetView() {
   const [releaseName, setReleaseName] = useState('');
   const [releaseCount, setReleaseCount] = useState(4);
   const [chartStyle, setChartStyle] = useState('donut');
+  const [basis, setBasis] = useState('committed');
   const [data, setData] = useState(null);
   const [fetching, setFetching] = useState(false);
 
@@ -35,6 +36,7 @@ export default function TriPortfolioDistributionGadgetView() {
         setReleaseName(cfg.releaseName ?? '');
         setReleaseCount(Math.min(6, Math.max(1, cfg.releaseCount ?? 4)));
         setChartStyle(cfg.chartStyle === 'bullet' ? 'bullet' : 'donut');
+        setBasis(cfg.basis === 'current' ? 'current' : 'committed');
       })
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false));
@@ -49,14 +51,14 @@ export default function TriPortfolioDistributionGadgetView() {
     const todayISO = localTodayISO();
     const previousReleaseCount = config.previousReleaseCount ?? 3;
     const call = mode === 'bySpace'
-      ? invoke('getPortfolioRoadmapDistribution', { projectKey: config.projectKey, releaseName: releaseName || null, releaseCount, todayISO, previousReleaseCount })
-      : invoke('getPortfolioReleaseDistribution', { spaces: config.spaces, releaseName: releaseName || null, todayISO, previousReleaseCount });
+      ? invoke('getPortfolioRoadmapDistribution', { projectKey: config.projectKey, releaseName: releaseName || null, releaseCount, todayISO, previousReleaseCount, basis })
+      : invoke('getPortfolioReleaseDistribution', { spaces: config.spaces, releaseName: releaseName || null, todayISO, previousReleaseCount, basis });
     call.then(res => { if (!ignore) { if (res.error) setError(res.error); setData(res); } })
       .catch(e => { if (!ignore) setError(String(e)); })
       .finally(() => { if (!ignore) setFetching(false); });
     return () => { ignore = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasConfig, mode, releaseName, releaseCount]);
+  }, [hasConfig, mode, releaseName, releaseCount, basis]);
 
   if (loading) return <div style={{ padding: 24, fontSize: 13 }}>Loading…</div>;
   if (!hasConfig) return <div style={{ padding: 16, color: 'var(--text-subtlest)', fontSize: 13 }}>Edit this gadget to choose at least one space.</div>;
@@ -106,6 +108,13 @@ export default function TriPortfolioDistributionGadgetView() {
               </select>
             </div>
           )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={LABEL}>Measure by</span>
+            <select value={basis} onChange={e => setBasis(e.target.value)} style={{ ...SELECT, width: 200 }}>
+              <option value="committed">Total Committed</option>
+              <option value="current">Current sprint contents</option>
+            </select>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={LABEL}>Chart</span>
             <select value={chartStyle} onChange={e => setChartStyle(e.target.value)} style={{ ...SELECT, width: 150 }}>

@@ -55,10 +55,11 @@ function validateAllocation(alloc, names) {
   return { alloc: clean, names: cleanNames, total: round1(total) };
 }
 
-// Story points a ticket with NO estimate contributes, so it still shows up in
-// the distribution rather than vanishing. Only a missing/blank estimate gets
-// this — an explicit 0 is a deliberate estimate and stays 0.
-const DEFAULT_UNESTIMATED_SP = 1;
+// Story points a ticket with NO estimate contributes. 0, matching Capacity's
+// Total Committed (which sums only real estimates) so the two never disagree;
+// such tickets are counted and reported (`unestimatedCount`) instead of being
+// given a phantom point. An explicit 0 is a deliberate estimate, not "missing".
+const DEFAULT_UNESTIMATED_SP = 0;
 
 // Buckets Jira issues (raw search results: { key, fields }) by the value of the
 // portfolio select field, summing story points.
@@ -118,6 +119,99 @@ function aggregateActuals(issues, { spFieldId, fieldId, defaultSp = DEFAULT_UNES
   };
 }
 
+// ── Committed-basis actuals ──────────────────────────────────────────────────
+// The portfolio can be measured against Capacity's Total Committed instead of the
+// live contents of a release's sprints. Total Committed is a saved number per
+// sprint, so each sprint's category split is saved with it ("Get SP Count") and
+// summed here.
+
+// Kept small: every sprint's split lives in one per-space `capacity-rows` value
+// (Forge caps a single value), so a long-running space with many sprints must stay
+// well under it. Beyond the cap only the COUNT is kept (see noEstimateCount).
+const MAX_SPLIT_NO_ESTIMATE_KEYS = 50;
+
+// One sprint's category split of the tickets that make up its committed SP.
+//  entries  [{ key, sp, hasEstimate, option: { id, value|name } | null }]
+// Returns what's stored on the sprint's capacity row. `noEstimateKeys` (capped)
+// is kept only so tickets spanning several sprints are counted once in the
+// "no estimate" tally; SP is deliberately NOT deduped (see aggregateCommittedSplits).
+function buildCommittedSplit(entries, fieldId) {
+  const categories = {};
+  let unassigned = 0;
+  const noEstimateKeys = [];
+  let noEstimateCount = 0;
+  for (const e of entries || []) {
+    const sp = Number.isFinite(e.sp) ? Math.max(0, e.sp) : 0;
+    if (!e.hasEstimate) {
+      noEstimateCount++;
+      if (noEstimateKeys.length < MAX_SPLIT_NO_ESTIMATE_KEYS) noEstimateKeys.push(e.key);
+    }
+    const id = e.option && e.option.id != null ? String(e.option.id) : null;
+    if (id == null) unassigned += sp;
+    else {
+      const c = categories[id] || (categories[id] = { name: e.option.value ?? e.option.name ?? id, sp: 0 });
+      c.sp += sp;
+    }
+  }
+  const out = {};
+  for (const [id, c] of Object.entries(categories)) out[id] = { name: c.name, sp: round1(c.sp) };
+  return { fieldId, categories: out, unassigned: round1(unassigned), noEstimateKeys, noEstimateCount };
+}
+
+// Sums the saved splits of a release's sprints. Matches Capacity's Total
+// Committed exactly: it sums each sprint's committedSp, so a ticket carried over
+// into several sprints is (intentionally) counted once per sprint — NOT deduped
+// by key like the live scan. A sprint with committed SP but no usable split (never
+// re-counted since this feature, hand-typed, or a different portfolio field) puts
+// its whole committed SP in Unassigned and is counted in `sprintsMissingSplit` so
+// the UI can say why. A split bigger than the committed figure is clamped.
+function aggregateCommittedSplits(rows, fieldId) {
+  const categories = {};
+  let totalSp = 0, unassignedSp = 0, sprintsMissingSplit = 0, sprintsNotCounted = 0, noEstimateOverflow = 0;
+  const noEstimate = new Set();
+
+  for (const r of rows || []) {
+    // null/blank = Committed was never counted for this sprint (its capacity
+    // still counts toward the target, so the UI says so rather than showing a
+    // wall of red with no explanation).
+    if (r.committedSp == null || r.committedSp === '') sprintsNotCounted++;
+    const committed = Number.isFinite(Number(r.committedSp)) ? Math.max(0, Number(r.committedSp)) : 0;
+    totalSp += committed;
+    const split = r.committedSplit;
+    if (!split || split.fieldId !== fieldId) {
+      if (committed > 0) { unassignedSp += committed; sprintsMissingSplit++; }
+      continue;
+    }
+    let splitTotal = 0;
+    for (const [id, c] of Object.entries(split.categories || {})) {
+      const sp = Math.max(0, c.sp || 0);
+      splitTotal += sp;
+      const agg = categories[id] || (categories[id] = { name: c.name ?? id, sp: 0 });
+      agg.sp += sp;
+    }
+    splitTotal += Math.max(0, split.unassigned || 0);
+    unassignedSp += Math.max(0, split.unassigned || 0);
+    // Anything committed that the split doesn't account for stays visible.
+    unassignedSp += Math.max(0, committed - splitTotal);
+    const keys = split.noEstimateKeys || [];
+    for (const k of keys) noEstimate.add(k);
+    // Tickets past the stored-key cap can't be deduped, only counted.
+    noEstimateOverflow += Math.max(0, (split.noEstimateCount ?? keys.length) - keys.length);
+  }
+
+  const out = {};
+  for (const [id, c] of Object.entries(categories)) out[id] = { name: c.name, sp: round1(c.sp) };
+  return {
+    totalSp: round1(totalSp),
+    categories: out,
+    unassigned: { sp: round1(unassignedSp) },
+    unestimatedCount: noEstimate.size + noEstimateOverflow,
+    sprintCount: (rows || []).length,
+    sprintsMissingSplit,
+    sprintsNotCounted,
+  };
+}
+
 // ── Cross-space Total (gadget) ───────────────────────────────────────────────
 // One space's distribution for one release has this shape (built in index.js):
 //   { name, totalCapacity, hasAllocation, alloc:{id:pct}, names:{id:name},
@@ -141,7 +235,7 @@ function mergeSpaceDistributions(items) {
   const names = {};      // key -> display name (first seen)
   const sp = {};         // key -> actual SP
   const targetNum = {};  // key -> sum(weight * pct)
-  let totalSp = 0, unassignedSp = 0, unestimatedCount = 0, sprintCount = 0;
+  let totalSp = 0, unassignedSp = 0, unestimatedCount = 0, sprintCount = 0, sprintsMissingSplit = 0, sprintsNotCounted = 0;
 
   const touch = (name) => {
     const key = `n:${normName(name)}`;
@@ -154,6 +248,8 @@ function mergeSpaceDistributions(items) {
     unassignedSp += d.unassigned?.sp || 0;
     unestimatedCount += d.unestimatedCount || 0;
     sprintCount += d.sprintCount || 0;
+    sprintsMissingSplit += d.sprintsMissingSplit || 0;
+    sprintsNotCounted += d.sprintsNotCounted || 0;
     for (const c of Object.values(d.categories || {})) sp[touch(c.name)] += c.sp || 0;
   }
 
@@ -184,7 +280,8 @@ function mergeSpaceDistributions(items) {
     hasAllocation: withAlloc.length > 0,
     alloc, names: outNames, categories,
     totalSp: round1(totalSp), unassigned: { sp: round1(unassignedSp) },
-    unestimatedCount, sprintCount,
+    unestimatedCount, sprintCount, sprintsMissingSplit, sprintsNotCounted,
+    basis: list[0]?.basis,
     thresholds: ths.length ? {
       warnPct: Math.max(...ths.map(t => t.warnPct)),
       criticalPct: Math.max(...ths.map(t => t.criticalPct)),
@@ -204,4 +301,4 @@ function resolveEffectiveAllocation(bucket, releaseId) {
   return { allocation: null, source: 'none' };
 }
 
-module.exports = { validateAllocation, aggregateActuals, mergeSpaceDistributions, resolveEffectiveAllocation, round1, MAX_OPTIONS, DEFAULT_UNESTIMATED_SP };
+module.exports = { validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, mergeSpaceDistributions, resolveEffectiveAllocation, round1, MAX_OPTIONS, DEFAULT_UNESTIMATED_SP };

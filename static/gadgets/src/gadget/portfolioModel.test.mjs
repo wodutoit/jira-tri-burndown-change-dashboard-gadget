@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPortfolioRows } from './portfolioModel.js';
+import { buildPortfolioRows, portfolioNotes } from './portfolioModel.js';
 
 const thresholds = { warnPct: 10, criticalPct: 20, minTolerancePp: 1 };
 const options = [{ id: '1', name: 'Infra' }, { id: '2', name: 'Features' }, { id: '3', name: 'Defects' }];
@@ -87,4 +87,42 @@ test('isDefault is reported only when an allocation is actually shown', () => {
   assert.equal(build({ allocation, isDefault: true, actuals: null }).isDefault, true);
   assert.equal(build({ allocation, actuals: null }).isDefault, false);
   assert.equal(build({ allocation: null, isDefault: true, actuals: null }).isDefault, false);
+});
+
+// ── committed basis: target = % of Total Capacity ─────────────────────────────
+test('committed basis judges committed SP against target % of Total Capacity', () => {
+  // Capacity 360, targets 20/80. Committed 352: cat 1 has 72 SP (= 20% of 360, on target)
+  // though it is only 20.5% of what was committed; cat 2 has 200 SP vs a 288 SP target.
+  const allocation = { alloc: { 1: 20, 2: 80 }, names: { 1: 'Infra', 2: 'Features' } };
+  const r = build({ allocation, actuals: actuals({ 1: 72, 2: 200 }, 80, { basis: 'committed', totalCapacity: 360 }) });
+  const by = Object.fromEntries(r.rows.map(x => [x.id, x]));
+  assert.equal(r.capacityBased, true);
+  assert.equal(by[1].targetSp, 72);
+  assert.equal(by[2].targetSp, 288);
+  assert.equal(by[1].status, 'ok');
+  assert.equal(by[2].status, 'critical'); // 200/360 = 55.6% of capacity vs 80% target
+  assert.equal(r.unassigned.status, 'critical'); // 80/360 = 22.2% vs 0% target
+  // percent labels stay a share of Total Committed
+  assert.equal(Math.round(by[1].actualPct * 10) / 10, 20.5);
+});
+
+test('live basis, or a release with no capacity, keeps the share-of-total comparison', () => {
+  const allocation = { alloc: { 1: 20, 2: 80 }, names: {} };
+  const live = build({ allocation, actuals: actuals({ 1: 20, 2: 80 }, 0, { basis: 'current', totalCapacity: 360 }) });
+  assert.equal(live.capacityBased, false);
+  assert.equal(live.rows[0].targetSp, null);
+  assert.equal(live.rows[0].status, 'ok');
+  const noCap = build({ allocation, actuals: actuals({ 1: 20, 2: 80 }, 0, { basis: 'committed', totalCapacity: 0 }) });
+  assert.equal(noCap.capacityBased, false);
+  assert.equal(noCap.rows[0].status, 'ok');
+});
+
+test('notes report no-estimate tickets and sprints missing a breakdown (committed basis only)', () => {
+  const m = build({ allocation: null, actuals: actuals({ 1: 5 }, 0, { basis: 'committed', unestimatedCount: 17, sprintsMissingSplit: 2 }) });
+  assert.deepEqual(portfolioNotes(m), [
+    '17 tickets have no estimate',
+    '2 sprints have no category breakdown (shown as Unassigned) — click Get SP Count on them in Capacity',
+  ]);
+  const live = build({ allocation: null, actuals: actuals({ 1: 5 }, 0, { basis: 'current', unestimatedCount: 1, sprintsMissingSplit: 3 }) });
+  assert.deepEqual(portfolioNotes(live), ['1 ticket has no estimate']);
 });

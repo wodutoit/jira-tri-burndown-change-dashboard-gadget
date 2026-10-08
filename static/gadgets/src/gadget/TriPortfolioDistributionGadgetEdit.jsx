@@ -23,6 +23,7 @@ export default function TriPortfolioDistributionGadgetEdit() {
   const [releaseCount, setReleaseCount] = useState(4);
   const [previousReleaseCount, setPreviousReleaseCount] = useState(3);
   const [chartStyle, setChartStyle] = useState('donut');
+  const [basis, setBasis] = useState('committed');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -45,6 +46,7 @@ export default function TriPortfolioDistributionGadgetEdit() {
       setReleaseCount(Math.min(6, Math.max(1, cfg.releaseCount ?? 4)));
       setPreviousReleaseCount(PREVIOUS_RELEASE_OPTIONS.includes(cfg.previousReleaseCount) ? cfg.previousReleaseCount : 3);
       setChartStyle(cfg.chartStyle === 'bullet' ? 'bullet' : 'donut');
+      setBasis(cfg.basis === 'current' ? 'current' : 'committed');
       const saved = Array.isArray(cfg.spaces) && cfg.spaces.length > 0 ? cfg.spaces : [{ projectKey: '' }];
       setSpaces(saved.map(s => ({ projectKey: s.projectKey ?? '' })));
     }).catch(e => setError(String(e)))
@@ -84,7 +86,7 @@ export default function TriPortfolioDistributionGadgetEdit() {
     try {
       await view.submit({
         mode, show, spaces: spaces.map(({ projectKey }) => ({ projectKey })),
-        projectKey, releaseName: releaseName || null, releaseCount, previousReleaseCount, chartStyle,
+        projectKey, releaseName: releaseName || null, releaseCount, previousReleaseCount, chartStyle, basis,
       });
     } finally {
       setSaving(false);
@@ -204,6 +206,14 @@ export default function TriPortfolioDistributionGadgetEdit() {
       </Section>
 
       <div style={S.divider} />
+
+      <Section title="Measure by">
+        <select value={basis} onChange={e => setBasis(e.target.value)} style={S.select}>
+          <option value="committed">Total Committed (matches the Capacity page; target = % of Total Capacity)</option>
+          <option value="current">Current sprint contents (live scan of the tickets in the release's sprints)</option>
+        </select>
+        <div style={S.hint}>The starting choice — viewers can switch on the gadget itself.</div>
+      </Section>
 
       <Section title="Chart style">
         <select value={chartStyle} onChange={e => setChartStyle(e.target.value)} style={S.select}>

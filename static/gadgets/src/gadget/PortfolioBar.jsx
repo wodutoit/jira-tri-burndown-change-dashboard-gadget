@@ -1,6 +1,6 @@
 import React from 'react';
 import { editStyles as S } from './sprintConfigShared';
-import { fmtPct, rowTooltip, STATUS_WORD } from './portfolioModel';
+import { fmtPct, rowTooltip, portfolioNotes, STATUS_WORD } from './portfolioModel';
 
 const STATUS_FILL = {
   ok: 'var(--ok)', warn: 'var(--filling)', critical: 'var(--over)', none: 'var(--text-subtlest)',
@@ -15,7 +15,7 @@ const HATCH = 'repeating-linear-gradient(45deg, rgba(255,255,255,.4) 0 3px, tran
 // unassigned work is a separate red pill since it has no allocation to size it.
 // (The button that opens the allocation popup lives in the Release column.)
 export default function PortfolioBar({ model, loading, error }) {
-  const { rows, unassigned, hasSaved, totalSp, unallocatedPct, unestimatedCount, isDefault } = model;
+  const { rows, unassigned, hasSaved, totalSp, unallocatedPct, isDefault } = model;
   const segments = rows.filter(r => r.target > 0);
 
   return (
@@ -62,11 +62,9 @@ export default function PortfolioBar({ model, loading, error }) {
         )}
       </div>
 
-      {!loading && !error && unestimatedCount > 0 && (
-        <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>
-          {unestimatedCount} unestimated ticket{unestimatedCount === 1 ? '' : 's'} counted as 1 SP each
-        </span>
-      )}
+      {!loading && !error && portfolioNotes(model).map((n, i) => (
+        <span key={i} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>
+      ))}
     </div>
   );
 }

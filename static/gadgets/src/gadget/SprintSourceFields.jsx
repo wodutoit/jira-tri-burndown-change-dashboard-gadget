@@ -102,15 +102,8 @@ export default function SprintSourceFields({
       <div style={S.divider} />
 
       <Section title="5. Commitment Grace Window" disabled={!projectKey}>
-        <input
-          type="number"
-          min="1"
-          value={graceWindowHours}
-          onChange={e => setGraceWindowHours(e.target.value)}
-          style={{ ...S.select, width: 100 }}
-        /> hours
         <div style={S.hint}>
-          Tickets added to the sprint within this many hours of the sprint's start date count as "committed" scope; anything later counts as mid-sprint scope change. Default 12h assumes the sprint's start date reflects when it was actually started. If you started the sprint later than its recorded start date (e.g. a backdated start date), widen this to cover the gap — otherwise tickets set up in that gap won't count as committed.
+          Set on the space's Capacity settings (Project settings → Capacity Planning), not here, so TRI Burndown, TRI Scope Change and the Capacity tab's "Get SP Count" always agree on what counts as "committed". Tickets added within that many hours of the sprint's start date count as committed scope; anything later is mid-sprint scope change.
         </div>
       </Section>
     </>

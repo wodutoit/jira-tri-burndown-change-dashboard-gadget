@@ -43,6 +43,17 @@ export default function CapacityScrumTab({
   const portfolioOn = portfolioEnabled && releaseMappingEnabled && !!portfolioThresholds;
   const visibleReleaseIds = visibleRows.map(s => s.releaseId).filter(Boolean);
   const portfolio = usePortfolio({ projectKey, enabled: portfolioOn, releaseIds: visibleReleaseIds });
+  // The portfolio's actuals are Total Committed split by category, and its
+  // targets are a share of Total Capacity — so counting/editing either one must
+  // refetch them or the bar would lag behind the table.
+  const refreshing = (fn) => async (...args) => {
+    const res = await fn(...args);
+    if (portfolioOn) portfolio.refreshActuals();
+    return res;
+  };
+  const onGetCommitted = refreshing(handleGetCommitted);
+  const onCommittedChange = refreshing(handleCommittedChange);
+  const onCapacityChange = refreshing(handleCapacityChange);
   const [portfolioReleaseId, setPortfolioReleaseId] = useState(null);
   const [portfolioSaving, setPortfolioSaving] = useState(false);
   const [portfolioError, setPortfolioError] = useState(null);
@@ -174,9 +185,9 @@ export default function CapacityScrumTab({
               velocityEditable={sprint.state === 'closed'}
               committedLoading={committedLoadingIds.has(sprint.id)}
               velocityLoading={velocityLoadingIds.has(sprint.id)}
-              onCapacityChange={v => handleCapacityChange(sprint.id, v)}
-              onCommittedChange={v => handleCommittedChange(sprint.id, v)}
-              onGetCommitted={() => handleGetCommitted(sprint.id)}
+              onCapacityChange={v => onCapacityChange(sprint.id, v)}
+              onCommittedChange={v => onCommittedChange(sprint.id, v)}
+              onGetCommitted={() => onGetCommitted(sprint.id)}
               onVelocityChange={v => handleVelocityChange(sprint.id, v)}
               onGetVelocity={() => handleGetVelocity(sprint.id)}
               statusSlot={<StatusChip state={sprint.state} />}

@@ -66,10 +66,15 @@ export default function PortfolioDialog({
         />
 
         <div style={{ ...S.hint, marginTop: 12 }}>
-          {hasActuals
-            ? <>Actual = current story points of every ticket in the {sprintCount} sprint{sprintCount === 1 ? '' : 's'} mapped to this release ({totalSp} SP in total).</>
-            : <>Actual shares appear once tickets are in this release's sprints.</>}
-          {' '}Each ticket with no estimate counts as 1 SP{unestimatedCount > 0 ? ` (${unestimatedCount} right now, so ${unestimatedCount} SP in total)` : ''}; sub-tasks without their own estimate count 0; an Epic with child issues is skipped because its children are counted.
+          {model.basis === 'committed'
+            ? (hasActuals
+                ? <>Actual = this release's Total Committed ({totalSp} SP across {sprintCount} sprint{sprintCount === 1 ? '' : 's'}), split by category when each sprint's SP Count was taken.{model.totalCapacity > 0 ? <> Target SP = target % of Total Capacity ({model.totalCapacity} SP).</> : null}</>
+                : <>Actual shares appear once the release's sprints have a Committed SP count.</>)
+            : (hasActuals
+                ? <>Actual = current story points of every ticket in the {sprintCount} sprint{sprintCount === 1 ? '' : 's'} mapped to this release ({totalSp} SP in total).</>
+                : <>Actual shares appear once tickets are in this release's sprints.</>)}
+          {' '}Tickets with no estimate count 0 SP{unestimatedCount > 0 ? ` (${unestimatedCount} right now)` : ''}.
+          {model.basis === 'committed' && model.sprintsMissingSplit > 0 ? ` ${model.sprintsMissingSplit} sprint${model.sprintsMissingSplit === 1 ? ' has' : 's have'} no category breakdown yet — click Get SP Count on ${model.sprintsMissingSplit === 1 ? 'it' : 'them'}; until then that SP shows as Unassigned.` : ''}
         </div>
 
         {error && <div style={{ ...S.error, marginTop: 12 }}>{error}</div>}

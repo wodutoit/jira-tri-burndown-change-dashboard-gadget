@@ -2,7 +2,7 @@ const Resolver = require('@forge/resolver').default;
 const { route, asUser } = require('@forge/api');
 const { kvs } = require('@forge/kvs');
 const crypto = require('crypto');
-const { validateAllocation, aggregateActuals, mergeSpaceDistributions, resolveEffectiveAllocation } = require('./portfolio');
+const { validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, mergeSpaceDistributions, resolveEffectiveAllocation } = require('./portfolio');
 
 const resolver = new Resolver();
 
@@ -458,6 +458,7 @@ async function extractRawSprintData(sprintId, issues, spFieldId) {
     // inflating commitment (ZEN Sprint 13: 135 SP vs Jira's 84).
     const own = issue.fields?.[spFieldId];
     const sp = typeof own === 'number' ? own : 0;
+    const hasEstimate = typeof own === 'number';
     const transitions = [];
     const sprintEvents = [];
 
@@ -482,6 +483,7 @@ async function extractRawSprintData(sprintId, issues, spFieldId) {
 
     issueData[issue.key] = {
       sp,
+      hasEstimate,
       summary: issue.fields?.summary ?? '',
       created: issue.fields?.created ?? null,
       currentStatus: issue.fields?.status?.name ?? null,
@@ -493,7 +495,7 @@ async function extractRawSprintData(sprintId, issues, spFieldId) {
 }
 
 async function getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh }) {
-  const cacheKey = `raw-noepic:${sprint.id}:${spFieldId}`;
+  const cacheKey = `raw-v3:${sprint.id}:${spFieldId}`; // v3: Epics excluded + per-issue hasEstimate
 
   if (!forceRefresh) {
     try {
@@ -667,7 +669,20 @@ function computeScopeFoundation(sprint, issueData, statusMapping, bizDays, grace
   }
 
   const initialScope = Object.values(initialCommitted).reduce((s, v) => s + v, 0);
-  return { initialScope, scopeDeltaByDay, removedTsByKey, nrTsByKey, graceCutoffMs: cutoffMs };
+  return { initialScope, initialCommitted, scopeDeltaByDay, removedTsByKey, nrTsByKey, graceCutoffMs: cutoffMs };
+}
+
+// The commitment grace window comes from the space's Capacity settings, not
+// from each gadget's own config, so TRI Burndown / Scope Change and Capacity's
+// "Get SP Count" always define "committed" identically. Falls back to the
+// gadget's own value only if the settings can't be read.
+async function resolveGraceWindowHours(projectKey, fallback) {
+  try {
+    const settings = await getCapacitySettingsFor(projectKey);
+    return Number(settings.graceWindowHours) || 12;
+  } catch (_) {
+    return Number(fallback) || 12;
+  }
 }
 
 // ── TRI-Burndown: ideal / dev remaining / review remaining / remaining ───────
@@ -775,7 +790,7 @@ resolver.define('getBurndownData', async ({ payload }) => {
     return { error: e.message };
   }
 
-  const data = computeBurndown(sprint, issueData, statusMapping, graceWindowHours, todayISO);
+  const data = computeBurndown(sprint, issueData, statusMapping, await resolveGraceWindowHours(projectKey, graceWindowHours), todayISO);
   if (!data) return { error: 'Could not compute burndown — check sprint dates.' };
   data.spaceName = await getSpaceName(projectKey);
 
@@ -855,7 +870,7 @@ resolver.define('getScopeChangeData', async ({ payload }) => {
     return { error: e.message };
   }
 
-  const data = computeScopeChangeData(sprint, issueData, statusMapping, graceWindowHours);
+  const data = computeScopeChangeData(sprint, issueData, statusMapping, await resolveGraceWindowHours(projectKey, graceWindowHours));
   if (!data) return { error: 'Could not compute scope changes — check sprint dates.' };
   data.spaceName = await getSpaceName(projectKey);
 
@@ -1606,6 +1621,7 @@ async function fetchMappedScrumSprints(board, projectKey) {
   const overrides = await getCapacityRows(projectKey);
   const tag = (list, state) => list.map(s => ({
     id: s.id, state, releaseId: overrides[s.id]?.releaseId ?? null, capacitySp: overrides[s.id]?.capacitySp ?? null,
+    committedSp: overrides[s.id]?.committedSp ?? null, committedSplit: overrides[s.id]?.committedSplit ?? null,
   }));
   return [...tag(active, 'active'), ...tag(future, 'future'), ...tag(closed, 'closed')];
 }
@@ -1645,7 +1661,8 @@ async function computeReleaseActuals(projectKey, settings, releaseId, group, for
     return { ...aggregateActuals([], { spFieldId, fieldId }), sprintCount: 0, computedAt: null };
   }
   const sprintKey = group.map(s => s.id).sort((a, b) => a - b).join(',');
-  const cacheKey = `portfolio-actuals:${projectKey}:${fieldId}:${spFieldId}:${releaseId}`;
+  // v2: unestimated tickets now count 0 SP (were 1) — old entries are wrong.
+  const cacheKey = `portfolio-actuals-v2:${projectKey}:${fieldId}:${spFieldId}:${releaseId}`;
   const ttl = group.every(s => s.state === 'closed') ? PORTFOLIO_CLOSED_CACHE_TTL_MS : ACTIVE_CACHE_TTL_MS;
 
   if (!forceRefresh) {
@@ -1697,6 +1714,51 @@ async function fetchPortfolioIssues(projectKey, sprintIds, spFieldId, fieldId) {
   return issues;
 }
 
+// The portfolio-field value of every issue in a sprint, keyed by issue key. Used
+// when a sprint's Committed SP is counted, so the committed tickets can be
+// bucketed by category without adding the field to the shared burndown
+// fetch/cache. Queried by sprint membership (the same `sprint = X` query the
+// committed tickets came from) rather than `key in (...)`, which Jira rejects
+// outright if any listed issue has since been deleted.
+async function fetchSprintCategories(projectKey, sprintId, fieldId) {
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(projectKey) || !Number.isInteger(Number(sprintId))) throw new Error('Invalid project or sprint.');
+  const byKey = new Map();
+  let nextPageToken;
+  while (true) {
+    const reqBody = { jql: `project = "${projectKey}" AND sprint = ${Number(sprintId)}`, fields: [fieldId], maxResults: 100 };
+    if (nextPageToken) reqBody.nextPageToken = nextPageToken;
+    const res = await asUser().requestJira(
+      route`/rest/api/3/search/jql`,
+      { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(reqBody) }
+    );
+    if (!res.ok) throw new Error(`Category lookup failed (${res.status}).`);
+    const body = await res.json();
+    const page = body.issues || [];
+    for (const issue of page) byKey.set(issue.key, issue.fields?.[fieldId] ?? null);
+    nextPageToken = body.nextPageToken;
+    if (!page.length || !nextPageToken) break;
+  }
+  return byKey;
+}
+
+// The category split saved alongside a sprint's Committed SP, or null when
+// Portfolio Planning isn't set up for the space. `committedKeys` are exactly the
+// tickets whose SP went into that committed figure.
+async function buildSprintCommittedSplit(projectKey, sprintId, issueData, committedKeys) {
+  const settings = await getCapacitySettingsFor(projectKey);
+  if (!settings.portfolioPlanningEnabled || !settings.portfolioFieldId) return null;
+  const options = await fetchSprintCategories(projectKey, sprintId, settings.portfolioFieldId);
+  return buildCommittedSplit(
+    committedKeys.map(key => ({
+      key,
+      sp: issueData[key]?.sp || 0,
+      hasEstimate: issueData[key]?.hasEstimate !== false,
+      option: options.get(key) ?? null,
+    })),
+    settings.portfolioFieldId
+  );
+}
+
 // Which of the fetched Epics have at least one child issue. Those Epics are
 // excluded from the totals (their children are counted directly); a childless
 // Epic keeps counting with its own estimate. If the child lookup fails the Epic
@@ -1722,11 +1784,27 @@ async function findEpicsWithChildren(issues) {
   return new Set(epics.filter((_, i) => flags[i]).map(e => e.key));
 }
 
+// Two ways to measure a release's actuals:
+//  'committed' (default) — Capacity's Total Committed, split by category from the
+//     breakdown saved with each sprint's "Get SP Count". Reads only stored rows,
+//     so it's instant and always agrees with the Capacity table.
+//  'current' — the live contents of the mapped sprints right now (one search per
+//     release; see computeReleaseActuals).
+const normBasis = (b) => (b === 'current' ? 'current' : 'committed');
+
+async function actualsForBasis(basis, projectKey, settings, releaseId, group, forceRefresh) {
+  if (basis === 'current') {
+    return { ...(await computeReleaseActuals(projectKey, settings, releaseId, group, forceRefresh)), basis };
+  }
+  return { ...aggregateCommittedSplits(group, settings.portfolioFieldId), computedAt: null, basis };
+}
+
 // Actuals for the given releases (or every release that has a mapped sprint
 // when `releaseIds` is omitted), one search per release. Releases with no
 // mapped sprints come back as zeros so callers don't have to special-case them.
 resolver.define('getPortfolioActuals', async ({ payload }) => {
   const { projectKey, releaseIds, forceRefresh } = payload ?? {};
+  const basis = normBasis(payload?.basis);
   if (!projectKey) return { releases: {}, error: 'No project key.' };
   try {
     const { settings, sprints, error } = await getScrumPortfolioContext(projectKey);
@@ -1738,10 +1816,13 @@ resolver.define('getPortfolioActuals', async ({ payload }) => {
       ? [...new Set(releaseIds.map(String).filter(id => /^\d{1,20}$/.test(id)))].slice(0, 50)
       : [...byRelease.keys()].slice(0, 50);
 
-    const entries = await Promise.all(wanted.map(async (releaseId) => [
-      releaseId,
-      await computeReleaseActuals(projectKey, settings, releaseId, byRelease.get(releaseId) ?? [], forceRefresh),
-    ]));
+    const entries = await Promise.all(wanted.map(async (releaseId) => {
+      const group = byRelease.get(releaseId) ?? [];
+      return [releaseId, {
+        ...(await actualsForBasis(basis, projectKey, settings, releaseId, group, forceRefresh)),
+        totalCapacity: rollupForVersion(group.map(s => ({ ...s, releaseId })), { id: releaseId }, settings).totalCapacity,
+      }];
+    }));
 
     return { fieldId: settings.portfolioFieldId, releases: Object.fromEntries(entries) };
   } catch (e) {
@@ -1753,9 +1834,9 @@ resolver.define('getPortfolioActuals', async ({ payload }) => {
 // One space's distribution for one release — everything a chart needs (actuals,
 // saved allocation, capacity for the cross-space weighting, thresholds) in one
 // shape, which is also the shape mergeSpaceDistributions() takes and returns.
-async function buildSpaceDistribution({ projectKey, name, settings, sprints, version, allocDoc }) {
+async function buildSpaceDistribution({ projectKey, name, settings, sprints, version, allocDoc, basis = 'committed' }) {
   const group = sprints.filter(s => s.releaseId === version.id);
-  const actuals = await computeReleaseActuals(projectKey, settings, version.id, group, false);
+  const actuals = await actualsForBasis(basis, projectKey, settings, version.id, group, false);
   const { allocation: stored, source } = resolveEffectiveAllocation(allocDoc.fields[settings.portfolioFieldId], version.id);
   return {
     projectKey, name,
@@ -1765,6 +1846,7 @@ async function buildSpaceDistribution({ projectKey, name, settings, sprints, ver
     alloc: stored?.alloc ?? {}, names: stored?.names ?? {},
     totalSp: actuals.totalSp, categories: actuals.categories, unassigned: actuals.unassigned,
     unestimatedCount: actuals.unestimatedCount, sprintCount: actuals.sprintCount,
+    sprintsMissingSplit: actuals.sprintsMissingSplit || 0, sprintsNotCounted: actuals.sprintsNotCounted || 0, basis,
     thresholds: {
       warnPct: settings.portfolioWarnPct,
       criticalPct: settings.portfolioCriticalPct,
@@ -1779,6 +1861,7 @@ async function buildSpaceDistribution({ projectKey, name, settings, sprints, ver
 // comes back as an { error } entry rather than failing the whole call.
 resolver.define('getPortfolioReleaseDistribution', async ({ payload }) => {
   const { spaces, releaseName, todayISO, previousReleaseCount } = payload ?? {};
+  const basis = normBasis(payload?.basis);
   if (!Array.isArray(spaces) || spaces.length === 0) return { results: [], total: null, error: 'No spaces configured.' };
 
   const results = [];
@@ -1796,7 +1879,7 @@ resolver.define('getPortfolioReleaseDistribution', async ({ payload }) => {
       if (!version) { results.push({ projectKey, name, releaseNames, error: 'No matching release.' }); continue; }
 
       const allocDoc = await readPortfolioDoc(projectKey);
-      const dist = await buildSpaceDistribution({ projectKey, name, settings: ctx.settings, sprints: ctx.sprints, version, allocDoc });
+      const dist = await buildSpaceDistribution({ projectKey, name, settings: ctx.settings, sprints: ctx.sprints, version, allocDoc, basis });
       results.push({ ...dist, releaseNames });
     } catch (e) {
       results.push({ projectKey, error: e.message });
@@ -1812,6 +1895,7 @@ resolver.define('getPortfolioReleaseDistribution', async ({ payload }) => {
 // as TRI Release Capacity's By-release mode).
 resolver.define('getPortfolioRoadmapDistribution', async ({ payload }) => {
   const { projectKey, releaseName, releaseCount, todayISO, previousReleaseCount } = payload ?? {};
+  const basis = normBasis(payload?.basis);
   if (!projectKey) return { results: [], error: 'No project key.' };
   try {
     const name = await getSpaceName(projectKey);
@@ -1827,7 +1911,7 @@ resolver.define('getPortfolioRoadmapDistribution', async ({ payload }) => {
     const roadmap = buildReleaseRoadmap(versions, anchor, count);
     const allocDoc = await readPortfolioDoc(projectKey);
     const results = await Promise.all(roadmap.map(version =>
-      buildSpaceDistribution({ projectKey, name, settings: ctx.settings, sprints: ctx.sprints, version, allocDoc })
+      buildSpaceDistribution({ projectKey, name, settings: ctx.settings, sprints: ctx.sprints, version, allocDoc, basis })
     ));
     return { name, results, releaseNames };
   } catch (e) {
@@ -2205,9 +2289,16 @@ resolver.define('getScrumSprintsForCapacity', async ({ payload }) => {
 });
 
 resolver.define('getSprintCommittedSp', async ({ payload }) => {
-  const { projectKey, sprintId, spFieldId, graceWindowHours } = payload ?? {};
+  const { projectKey, sprintId, spFieldId } = payload ?? {};
   if (!projectKey || !sprintId || !spFieldId) return { error: 'Missing config.' };
   try {
+    // Same two inputs TRI Burndown / Scope Change now use, so the numbers agree:
+    // the space's own grace window, and the statuses it has marked as excluded
+    // ("Excluded Done Statuses" — e.g. Not Required) which never count as scope.
+    const settings = await getCapacitySettingsFor(projectKey);
+    const graceHours = Number(settings.graceWindowHours) || 12;
+    const excluded = new Set(settings.excludedDoneStatuses || []);
+
     const sprintRes = await asUser().requestJira(
       route`/rest/agile/1.0/sprint/${sprintId}`,
       { headers: { Accept: 'application/json' } }
@@ -2215,12 +2306,14 @@ resolver.define('getSprintCommittedSp', async ({ payload }) => {
     if (!sprintRes.ok) return { error: `Failed to fetch sprint: ${sprintRes.status}` };
     const sprint = await sprintRes.json();
 
-    let committedSp;
+    let committedSp, issueDataForSplit, committedKeys;
     if (sprint.state === 'future') {
       // No grace-window concept yet for a sprint that hasn't started — just
-      // sum the SP of whatever's currently assigned to it.
+      // sum the SP of whatever's currently assigned to it (minus excluded).
       const { issueData } = await getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh: true });
-      committedSp = Math.round(Object.values(issueData).reduce((a, i) => a + (i.sp || 0), 0) * 10) / 10;
+      committedKeys = Object.keys(issueData).filter(k => !excluded.has(issueData[k].currentStatus));
+      committedSp = Math.round(committedKeys.reduce((a, k) => a + (issueData[k].sp || 0), 0) * 10) / 10;
+      issueDataForSplit = issueData;
     } else {
       const { issueData } = await getSprintRawData({ projectKey, sprint, spFieldId });
       const startDate = sprint.startDate?.slice(0, 10);
@@ -2228,13 +2321,31 @@ resolver.define('getSprintCommittedSp', async ({ payload }) => {
       const endDate = actualSprintEnd(sprint)?.slice(0, 10) || startDate;
       const bizDays = getBusinessDays(startDate, endDate);
       if (!bizDays.length) return { error: 'Sprint has no start date yet.' };
-      const { statusMapping, error: mapErr } = await getCapacityStatusMapping(projectKey);
+      const { statusMapping: categoryMapping, error: mapErr } = await getCapacityStatusMapping(projectKey);
       if (mapErr) return { error: mapErr };
-      const { initialScope } = computeScopeFoundation(sprint, issueData, statusMapping, bizDays, Number(graceWindowHours) || 12);
+      // Capacity's category mapping has no 'excluded' concept; overlay the
+      // space's excluded statuses so computeScopeFoundation treats them exactly
+      // as the burndown's own "Excluded (Not Required)" mapping does.
+      const statusMapping = { ...categoryMapping };
+      for (const name of excluded) statusMapping[name] = 'excluded';
+      const { initialScope, initialCommitted } = computeScopeFoundation(sprint, issueData, statusMapping, bizDays, graceHours);
       committedSp = Math.round(initialScope * 10) / 10;
+      issueDataForSplit = issueData;
+      committedKeys = Object.keys(initialCommitted);
     }
-    await updateCapacityRow(projectKey, sprintId, { committedSp, committedAt: new Date().toISOString() });
-    return { committedSp };
+
+    // Save the category split with the number, so Portfolio can break Total
+    // Committed down by category. A failed lookup must not block the count
+    // itself — the row just has no split (shown as Unassigned until recounted).
+    let committedSplit = null;
+    let splitError;
+    try {
+      committedSplit = await buildSprintCommittedSplit(projectKey, sprintId, issueDataForSplit, committedKeys);
+    } catch (e) {
+      splitError = e.message;
+    }
+    await updateCapacityRow(projectKey, sprintId, { committedSp, committedAt: new Date().toISOString(), committedSplit });
+    return { committedSp, ...(splitError ? { splitError } : {}) };
   } catch (e) {
     return { error: e.message };
   }
@@ -2244,9 +2355,12 @@ resolver.define('setSprintCommittedSp', async ({ payload }) => {
   const { projectKey, sprintId, committedSp } = payload ?? {};
   if (!projectKey || !sprintId) return { error: 'Missing config.' };
   try {
+    // A hand-typed Committed has no ticket list behind it, so any saved
+    // category split would now describe a different number — drop it.
     await updateCapacityRow(projectKey, sprintId, {
       committedSp: committedSp == null ? null : Number(committedSp),
       committedAt: new Date().toISOString(),
+      committedSplit: null,
     });
     return { ok: true };
   } catch (e) {
