@@ -1,6 +1,6 @@
 import React from 'react';
 import { PieChart, Pie, Cell, Tooltip } from 'recharts';
-import { buildPortfolioRows, fmtPct, rowTooltip, portfolioNotes, STATUS_WORD } from './portfolioModel';
+import { buildPortfolioRows, fmtPct, rowTooltip, portfolioNotes, noEstimateNote, STATUS_WORD } from './portfolioModel';
 import { portfolioBands } from './gadgetUtils';
 
 // Category identity colours. Status (green/orange/red) is NEVER used to colour a
@@ -208,6 +208,16 @@ export default function PortfolioChart({ title, subtitle, badge, data, chartStyl
         {badge && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.4px', padding: '1px 7px', borderRadius: 3, background: badge.bg, color: badge.text, flex: 'none' }}>{badge.label}</span>}
       </div>
 
+      {noEstimateNote(model) && (
+        <div
+          role="status"
+          title="Tickets with no story-point estimate count as 0 SP, so these numbers understate the real work until they are estimated."
+          style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, padding: '5px 9px', borderRadius: 4, background: 'var(--filling-bg)', color: 'var(--filling-text)', fontSize: 12, fontWeight: 700 }}
+        >
+          <span aria-hidden="true">⚠</span>{noEstimateNote(model)}
+        </div>
+      )}
+
       {chartStyle === 'bullet'
         ? <Bullets model={model} thresholds={data.thresholds} />
         : <><Donut model={model} colorFor={colorFor} /><LegendTable model={model} colorFor={colorFor} /></>}
@@ -216,7 +226,7 @@ export default function PortfolioChart({ title, subtitle, badge, data, chartStyl
         {!model.hasSaved && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>No portfolio allocation set for this release — showing actuals only.</span>}
         {model.hasSaved && data.usesDefault && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>Target is the space's default distribution.</span>}
         {model.capacityBased && model.hasSaved && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>Target SP = target % of Total Capacity ({model.totalCapacity} SP); actual = Total Committed ({model.totalSp} SP).</span>}
-        {portfolioNotes(model).map((n, i) => <span key={`n${i}`} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>)}
+        {portfolioNotes(model).filter(n => n !== noEstimateNote(model)).map((n, i) => <span key={`n${i}`} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>)}
         {notes.map((n, i) => <span key={i} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>)}
       </div>
     </div>

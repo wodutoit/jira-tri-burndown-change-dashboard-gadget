@@ -103,11 +103,17 @@ export const STATUS_WORD = { ok: 'Within threshold', warn: 'Outside warn thresho
 // Footnote under a chart/bar: how many tickets carry no estimate (they count 0 SP,
 // matching Capacity's Total Committed), and — on the committed basis — how many
 // sprints have no saved category breakdown yet.
+// The no-estimate warning on its own, so the UI can show it prominently (they
+// count 0 SP, so the numbers understate the real work until they're estimated).
+export function noEstimateNote(model) {
+  const n = model.unestimatedCount;
+  return n > 0 ? `${n} ticket${n === 1 ? ' has' : 's have'} no estimate` : null;
+}
+
 export function portfolioNotes(model) {
   const notes = [];
-  if (model.unestimatedCount > 0) {
-    notes.push(`${model.unestimatedCount} ticket${model.unestimatedCount === 1 ? ' has' : 's have'} no estimate`);
-  }
+  const noEstimate = noEstimateNote(model);
+  if (noEstimate) notes.push(noEstimate);
   if (model.basis === 'committed' && model.sprintsNotCounted > 0) {
     const n = model.sprintsNotCounted;
     notes.push(`${n} sprint${n === 1 ? ' has' : 's have'} no Committed SP yet — its capacity is in the target, so categories may look under target`);

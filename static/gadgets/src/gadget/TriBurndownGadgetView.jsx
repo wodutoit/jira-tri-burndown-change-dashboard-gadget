@@ -174,6 +174,7 @@ export default function TriBurndownGadgetView() {
 
       {/* Stat chips */}
       <div style={{ display: 'flex', gap: 20, justifyContent: 'space-around', padding: '8px 0 12px', borderBottom: '1px solid var(--border)', marginBottom: 10 }}>
+        {data.capacitySp != null && <StatChip label="Capacity" value={`${data.capacitySp} SP`} />}
         <StatChip label="Committed" value={`${data.committedScope} SP`} />
         <StatChip label="Dev Remaining" value={`${lastDev} SP`} color={COLORS.devRem} />
         <StatChip label="Review Remaining" value={`${lastRev} SP`} color={COLORS.reviewRem} />

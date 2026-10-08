@@ -685,6 +685,23 @@ async function resolveGraceWindowHours(projectKey, fallback) {
   }
 }
 
+// A sprint's capacity exactly as the Capacity tab shows it: the sprint's own
+// override, else the space's Base Capacity. null when the space has never been
+// set up for Capacity (no saved settings and no override), so the burndown
+// doesn't show a made-up default.
+async function resolveSprintCapacity(projectKey, sprintId) {
+  try {
+    const [saved, rows] = await Promise.all([kvs.get(`capacity-settings:${projectKey}`), getCapacityRows(projectKey)]);
+    const override = rows[sprintId]?.capacitySp;
+    if (override != null && Number.isFinite(Number(override))) return Number(override);
+    if (!saved) return null;
+    const base = Number(saved.baseCapacitySp ?? CAPACITY_SETTINGS_DEFAULTS.baseCapacitySp);
+    return Number.isFinite(base) ? base : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // ── TRI-Burndown: ideal / dev remaining / review remaining / remaining ───────
 
 function computeBurndown(sprint, issueData, statusMapping, graceWindowHours, clientTodayISO) {
@@ -793,6 +810,7 @@ resolver.define('getBurndownData', async ({ payload }) => {
   const data = computeBurndown(sprint, issueData, statusMapping, await resolveGraceWindowHours(projectKey, graceWindowHours), todayISO);
   if (!data) return { error: 'Could not compute burndown — check sprint dates.' };
   data.spaceName = await getSpaceName(projectKey);
+  data.capacitySp = await resolveSprintCapacity(projectKey, sprint.id);
 
   return { data, fromCache };
 });

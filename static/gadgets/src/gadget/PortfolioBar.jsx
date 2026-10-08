@@ -1,6 +1,6 @@
 import React from 'react';
 import { editStyles as S } from './sprintConfigShared';
-import { fmtPct, rowTooltip, portfolioNotes, STATUS_WORD } from './portfolioModel';
+import { fmtPct, rowTooltip, portfolioNotes, noEstimateNote, STATUS_WORD } from './portfolioModel';
 
 const STATUS_FILL = {
   ok: 'var(--ok)', warn: 'var(--filling)', critical: 'var(--over)', none: 'var(--text-subtlest)',
@@ -62,7 +62,15 @@ export default function PortfolioBar({ model, loading, error }) {
         )}
       </div>
 
-      {!loading && !error && portfolioNotes(model).map((n, i) => (
+      {!loading && !error && noEstimateNote(model) && (
+        <span
+          title="Tickets with no story-point estimate count as 0 SP, so these numbers understate the real work until they are estimated."
+          style={{ ...S.chip, background: 'var(--filling-bg)', color: 'var(--filling-text)', alignSelf: 'flex-start' }}
+        >
+          ⚠ {noEstimateNote(model)}
+        </span>
+      )}
+      {!loading && !error && portfolioNotes(model).filter(n => n !== noEstimateNote(model)).map((n, i) => (
         <span key={i} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>
       ))}
     </div>
