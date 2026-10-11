@@ -24,6 +24,7 @@ export default function TriPortfolioDistributionGadgetEdit() {
   const [previousReleaseCount, setPreviousReleaseCount] = useState(3);
   const [chartStyle, setChartStyle] = useState('donut');
   const [basis, setBasis] = useState('committed');
+  const [useDashboardFilter, setUseDashboardFilter] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -43,6 +44,7 @@ export default function TriPortfolioDistributionGadgetEdit() {
       setShow(['both', 'spaces', 'total'].includes(cfg.show) ? cfg.show : 'both');
       setReleaseName(cfg.releaseName ?? '');
       setProjectKey(cfg.projectKey ?? '');
+      setUseDashboardFilter(!!cfg.useDashboardFilter);
       setReleaseCount(Math.min(6, Math.max(1, cfg.releaseCount ?? 4)));
       setPreviousReleaseCount(PREVIOUS_RELEASE_OPTIONS.includes(cfg.previousReleaseCount) ? cfg.previousReleaseCount : 3);
       setChartStyle(cfg.chartStyle === 'bullet' ? 'bullet' : 'donut');
@@ -87,6 +89,7 @@ export default function TriPortfolioDistributionGadgetEdit() {
       await view.submit({
         mode, show, spaces: spaces.map(({ projectKey }) => ({ projectKey })),
         projectKey, releaseName: releaseName || null, releaseCount, previousReleaseCount, chartStyle, basis,
+        useDashboardFilter: mode === 'byRelease' && useDashboardFilter,
       });
     } finally {
       setSaving(false);
@@ -162,6 +165,23 @@ export default function TriPortfolioDistributionGadgetEdit() {
       )}
 
       <div style={S.divider} />
+
+      {mode === 'byRelease' && (
+        <>
+          <Section title="Dashboard filter">
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+              <input type="checkbox" checked={useDashboardFilter} onChange={e => setUseDashboardFilter(e.target.checked)} />
+              Use dashboard release filter
+            </label>
+            <div style={S.hint}>
+              Follow the release chosen in a TRI Release Filter gadget on this dashboard. The Default release
+              below is then only the fallback if no filter has been set.
+            </div>
+          </Section>
+
+          <div style={S.divider} />
+        </>
+      )}
 
       <Section title={mode === 'bySpace' ? 'Current release' : 'Default release'}>
         <select value={releaseName} onChange={e => setReleaseName(e.target.value)} style={S.select}>

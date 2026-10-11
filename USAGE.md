@@ -9,6 +9,7 @@ Nine Jira dashboard gadgets for sprint/iteration reporting, plus a project-level
 | **TRI Rework** | How often work gets kicked back out of testing, as a chart, a table of individual events, or both |
 | **TRI Cycle Time** | How many business hours each issue spent In Progress, Blocked, in Code Review, and in Test, compared against its story-point estimate |
 | **TRI Sprint Filter** | A space/sprint picker other TRI gadgets on the same dashboard can follow, so you only have to pick the sprint once |
+| **TRI Release Filter** | A release picker that TRI Release Capacity ("By space") and TRI Portfolio Distribution ("By release") gadgets on the same dashboard can follow, so you only have to pick the release once |
 | **TRI Velocity** | Capacity/Committed/Velocity per closed sprint or completed iteration, from each space's Capacity data — one chart per space, with an optional combined Total across spaces |
 | **TRI Kanban Burnup** | A cumulative burn-up chart (Target/Development/Review/Testing) for a Kanban iteration |
 | **TRI Kanban Rework** | Same as TRI Rework, but for a Kanban iteration instead of a sprint |
@@ -22,7 +23,7 @@ All four Scrum reporting gadgets together on one dashboard:
 
 1. Open the dashboard you want to add it to.
 2. Click **Add gadget** (usually in the top-right of the dashboard).
-3. Search for **TRI Burndown**, **TRI Scope Change**, **TRI Rework**, **TRI Cycle Time**, **TRI Sprint Filter**, **TRI Velocity**, **TRI Kanban Burnup**, **TRI Kanban Rework**, or **TRI Kanban Cycle Time** and add it.
+3. Search for **TRI Burndown**, **TRI Scope Change**, **TRI Rework**, **TRI Cycle Time**, **TRI Sprint Filter**, **TRI Release Filter**, **TRI Velocity**, **TRI Kanban Burnup**, **TRI Kanban Rework**, or **TRI Kanban Cycle Time** and add it.
 4. The gadget appears with a message asking you to configure it — click **Edit** on the gadget to open its settings.
 
 ## Configuring a gadget
@@ -85,6 +86,22 @@ To use it:
 
 If a gadget has the toggle on but the filter points at a different space than the one it was configured with, it falls back to a best-guess status mapping for that space and shows a small note saying so — edit the gadget while the filter points at that space to fine-tune the mapping.
 
+## TRI Release Filter — pick the release once for the whole dashboard
+
+If you keep changing the same release on several release-based gadgets, add a **TRI Release Filter** gadget instead. It is independent of the TRI Sprint Filter — use either or both on the same dashboard. Its Edit screen has the same settings as the gadgets it drives, so the list it offers matches theirs:
+
+1. **Spaces** — pick one or more spaces with Release Mapping enabled. The dropdown offers the combined list of their releases.
+2. **Default release** — the starting selection (or **Auto — next release per space**). It is used the first time the filter is added to a dashboard; after someone picks a release on the gadget, that pick is remembered.
+3. **Previous releases to list** — how many already-released releases to offer, most recent first. Unreleased releases are always listed. Set this to the same value as your other release gadgets so the lists agree.
+
+To use it:
+
+1. Add the **TRI Release Filter** gadget and set its spaces in Edit mode.
+2. Edit each gadget that should follow it and turn on **"Use dashboard release filter"**. This option only appears for **TRI Release Capacity in "By space" mode** (one release, all spaces) and **TRI Portfolio Distribution in "By release" mode** (one release, a chart per space).
+3. Pick a release in the TRI Release Filter — every gadget with the option on updates automatically, without a page refresh. Their own Release dropdown is hidden while they follow the filter.
+
+If no TRI Release Filter has been set on the dashboard yet, a gadget with the option on uses its own Default release. If a space has no release with the chosen name, that space shows "No matching release." while the others still render.
+
 ## TRI Velocity
 
 Capacity, Committed, and Velocity story points per closed sprint or completed iteration. This gadget doesn't calculate anything itself — it reads the same numbers already saved on each space's own **Capacity** tab (see below), so a space needs **Capacity Planning enabled** before you can add it here. Unlike the other gadgets, its Edit screen doesn't ask for a single Space/Sprint — it asks for one or more **spaces**, since it's meant to work either as a single team's velocity trend or a multi-team rollup:
@@ -139,7 +156,7 @@ Each gadget caches its sprint data briefly to load faster — active sprints ref
 - If your project has more than one Scrum board, the gadget uses the first one Jira returns.
 - Business-hours calculations (TRI Cycle Time) use a single fixed time-zone offset rather than a full time zone, so they don't automatically adjust for daylight saving.
 - Very large sprints (roughly 100+ issues with long histories) may take longer to load the first time, since the gadget reads each issue's full status history.
-- TRI Sprint Filter's live updates only reach gadgets already open in your browser tab. If you change the filter and another gadget doesn't seem to follow, refresh the page — it'll pick up the current selection on load either way.
+- TRI Sprint Filter's and TRI Release Filter's live updates only reach gadgets already open in your browser tab. If you change the filter and another gadget doesn't seem to follow, refresh the page — it'll pick up the current selection on load either way.
 - TRI Velocity reads whatever a space's Capacity tab has already calculated — it doesn't calculate anything itself. If a sprint or iteration's Committed/Velocity was never fetched there (no "Get SP Count"/"Get Velocity" click yet), TRI Velocity shows `0` for it rather than computing a number on its own.
 - Capacity has no control over exactly where its tab lands in a project's navigation — if you want it next to Reports specifically, drag it there yourself using Jira's own tab customization, the same way you'd move a Tempo or Time Tracker tab.
 - Kanban iterations are entirely defined inside this app — they don't show up anywhere else in Jira (no calendar entry, no board marker). Deleting an iteration only removes it from this table; it never touches the underlying issues.

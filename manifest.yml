@@ -62,6 +62,19 @@ modules:
       edit:
         resource: main
 
+    - key: sprint-tri-release-filter-gadget
+      title: TRI Release Filter
+      description: Pick a release once — TRI Release Capacity ("By space") and
+        TRI Portfolio Distribution ("By release") gadgets on this dashboard
+        with "Use dashboard release filter" enabled follow the same selection
+        automatically.
+      thumbnail: https://raw.githubusercontent.com/wodutoit/jira-tri-burndown-change-dashboard-gadget/icons-v4/static/gadgets/public/icons/tri-sprint-filter.svg
+      resource: main
+      resolver:
+        function: resolver
+      edit:
+        resource: main
+
     - key: sprint-tri-velocity-gadget
       title: TRI Velocity
       description: Capacity, Committed, and Velocity story points per closed

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { invoke, view } from '@forge/bridge';
 import { localTodayISO, classifyReleaseStatus } from './gadgetUtils';
+import { useDashboardReleaseFilter } from './useDashboardReleaseFilter';
 
 const TRACK_H = 130;
 const RELEASE_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6];
@@ -252,6 +253,13 @@ export default function TriReleaseCapacityGadgetView() {
   const mode = config?.mode === 'byRelease' ? 'byRelease' : 'bySpace';
   const hasConfig = !!config && (mode === 'byRelease' ? !!config.projectKey : Array.isArray(config.spaces) && config.spaces.length > 0);
 
+  // Only "By space" (one release, all spaces) follows the dashboard release
+  // filter. A filter that has never been set falls back to the local release.
+  const useFilter = !!config?.useDashboardFilter && mode === 'bySpace';
+  const { filter, filterLoading } = useDashboardReleaseFilter(useFilter);
+  const filterEngaged = useFilter && !!filter;
+  const effectiveReleaseName = filterEngaged ? (filter.releaseName ?? '') : releaseName;
+
   useEffect(() => {
     view.theme.enable().catch(() => {});
     view.getContext().catch(() => ({}))
@@ -266,7 +274,7 @@ export default function TriReleaseCapacityGadgetView() {
   }, []);
 
   useEffect(() => {
-    if (!hasConfig) return;
+    if (!hasConfig || filterLoading) return;
     // `ignore` guards against a stale response overwriting a newer one — if
     // the viewer changes "Releases to show" (or the Release dropdown) again
     // before the previous request finishes, both calls are in flight and
@@ -281,7 +289,7 @@ export default function TriReleaseCapacityGadgetView() {
     const todayISO = localTodayISO();
     const call = mode === 'byRelease'
       ? invoke('getReleaseRoadmapRollup', { projectKey: config.projectKey, releaseName: releaseName || null, releaseCount, todayISO })
-      : invoke('getReleaseCapacityRollup', { spaces: config.spaces, releaseName: releaseName || null, todayISO, previousReleaseCount: config.previousReleaseCount ?? 3 });
+      : invoke('getReleaseCapacityRollup', { spaces: config.spaces, releaseName: effectiveReleaseName || null, todayISO, previousReleaseCount: config.previousReleaseCount ?? 3 });
 
     call.then(res => {
       if (ignore) return;
@@ -295,7 +303,7 @@ export default function TriReleaseCapacityGadgetView() {
 
     return () => { ignore = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasConfig, mode, releaseName, releaseCount]);
+  }, [hasConfig, filterLoading, mode, effectiveReleaseName, releaseName, releaseCount]);
 
   if (loading) {
     return <div style={{ padding: 24, fontSize: 13 }}>Loading…</div>;
@@ -333,7 +341,7 @@ export default function TriReleaseCapacityGadgetView() {
               </select>
             </div>
           </div>
-        ) : (
+        ) : !filterEngaged ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase', color: 'var(--text-subtlest)' }}>Release</span>
             <select
@@ -345,7 +353,7 @@ export default function TriReleaseCapacityGadgetView() {
               {releaseNames.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
-        )}
+        ) : null}
         <Legend />
       </div>
 

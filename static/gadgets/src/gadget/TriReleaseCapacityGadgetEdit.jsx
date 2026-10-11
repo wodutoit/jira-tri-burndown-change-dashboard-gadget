@@ -20,6 +20,7 @@ export default function TriReleaseCapacityGadgetEdit() {
   const [releaseNameOptions, setReleaseNameOptions] = useState([]);
   const [releaseCount, setReleaseCount] = useState(4);
   const [previousReleaseCount, setPreviousReleaseCount] = useState(3);
+  const [useDashboardFilter, setUseDashboardFilter] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -37,6 +38,7 @@ export default function TriReleaseCapacityGadgetEdit() {
       setMode(cfg.mode === 'byRelease' ? 'byRelease' : 'bySpace');
       setReleaseName(cfg.releaseName ?? '');
       setProjectKey(cfg.projectKey ?? '');
+      setUseDashboardFilter(!!cfg.useDashboardFilter);
       setReleaseCount(Math.min(6, Math.max(1, cfg.releaseCount ?? 4)));
       setPreviousReleaseCount(PREVIOUS_RELEASE_OPTIONS.includes(cfg.previousReleaseCount) ? cfg.previousReleaseCount : 3);
 
@@ -84,6 +86,7 @@ export default function TriReleaseCapacityGadgetEdit() {
       await view.submit({
         mode, spaces: spaces.map(({ projectKey }) => ({ projectKey })),
         projectKey, releaseName: releaseName || null, releaseCount, previousReleaseCount,
+        useDashboardFilter: mode === 'bySpace' && useDashboardFilter,
       });
     } finally {
       setSaving(false);
@@ -176,6 +179,18 @@ export default function TriReleaseCapacityGadgetEdit() {
 
       {mode === 'bySpace' && (
         <>
+          <div style={S.divider} />
+          <Section title="Dashboard filter">
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+              <input type="checkbox" checked={useDashboardFilter} onChange={e => setUseDashboardFilter(e.target.checked)} />
+              Use dashboard release filter
+            </label>
+            <div style={S.hint}>
+              Follow the release chosen in a TRI Release Filter gadget on this dashboard. The Release selection
+              above is then only the fallback if no filter has been set.
+            </div>
+          </Section>
+
           <div style={S.divider} />
           <Section title="Previous releases to list">
             <select

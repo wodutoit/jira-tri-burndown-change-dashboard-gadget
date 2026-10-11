@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { invoke, view } from '@forge/bridge';
 import { localTodayISO } from './gadgetUtils';
 import PortfolioChart, { buildColorMap } from './PortfolioChart';
+import { useDashboardReleaseFilter } from './useDashboardReleaseFilter';
 
 const RELEASE_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6];
 const LABEL = { fontSize: 10, fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase', color: 'var(--text-subtlest)' };
@@ -27,6 +28,13 @@ export default function TriPortfolioDistributionGadgetView() {
   const mode = config?.mode === 'bySpace' ? 'bySpace' : 'byRelease';
   const hasConfig = !!config && (mode === 'bySpace' ? !!config.projectKey : Array.isArray(config.spaces) && config.spaces.length > 0);
 
+  // Only "By release" (one release, a chart per space) follows the dashboard
+  // release filter. A filter that has never been set falls back to the local release.
+  const useFilter = !!config?.useDashboardFilter && mode === 'byRelease';
+  const { filter, filterLoading } = useDashboardReleaseFilter(useFilter);
+  const filterEngaged = useFilter && !!filter;
+  const effectiveReleaseName = filterEngaged ? (filter.releaseName ?? '') : releaseName;
+
   useEffect(() => {
     view.theme.enable().catch(() => {});
     view.getContext().catch(() => ({}))
@@ -43,7 +51,7 @@ export default function TriPortfolioDistributionGadgetView() {
   }, []);
 
   useEffect(() => {
-    if (!hasConfig) return;
+    if (!hasConfig || filterLoading) return;
     // Ignore a slow earlier response that lands after a newer selection's.
     let ignore = false;
     setFetching(true);
@@ -52,13 +60,13 @@ export default function TriPortfolioDistributionGadgetView() {
     const previousReleaseCount = config.previousReleaseCount ?? 3;
     const call = mode === 'bySpace'
       ? invoke('getPortfolioRoadmapDistribution', { projectKey: config.projectKey, releaseName: releaseName || null, releaseCount, todayISO, previousReleaseCount, basis })
-      : invoke('getPortfolioReleaseDistribution', { spaces: config.spaces, releaseName: releaseName || null, todayISO, previousReleaseCount, basis });
+      : invoke('getPortfolioReleaseDistribution', { spaces: config.spaces, releaseName: effectiveReleaseName || null, todayISO, previousReleaseCount, basis });
     call.then(res => { if (!ignore) { if (res.error) setError(res.error); setData(res); } })
       .catch(e => { if (!ignore) setError(String(e)); })
       .finally(() => { if (!ignore) setFetching(false); });
     return () => { ignore = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasConfig, mode, releaseName, releaseCount, basis]);
+  }, [hasConfig, filterLoading, mode, effectiveReleaseName, releaseName, releaseCount, basis]);
 
   if (loading) return <div style={{ padding: 24, fontSize: 13 }}>Loading…</div>;
   if (!hasConfig) return <div style={{ padding: 16, color: 'var(--text-subtlest)', fontSize: 13 }}>Edit this gadget to choose at least one space.</div>;
@@ -99,7 +107,7 @@ export default function TriPortfolioDistributionGadgetView() {
                 </select>
               </div>
             </>
-          ) : (
+          ) : !filterEngaged ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <span style={LABEL}>Release</span>
               <select value={releaseName} onChange={e => setReleaseName(e.target.value)} style={{ ...SELECT, width: 260 }}>
@@ -107,7 +115,7 @@ export default function TriPortfolioDistributionGadgetView() {
                 {releaseNames.map(n => <option key={n} value={n}>{n}</option>)}
               </select>
             </div>
-          )}
+          ) : null}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={LABEL}>Measure by</span>
             <select value={basis} onChange={e => setBasis(e.target.value)} style={{ ...SELECT, width: 200 }}>

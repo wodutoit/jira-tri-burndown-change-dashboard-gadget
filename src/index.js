@@ -346,6 +346,41 @@ resolver.define('setDashboardSprintFilter', async ({ payload, context }) => {
   }
 });
 
+// ── TRI-Release-Filter: shared dashboard-level Release selection ─────────────
+// Same pattern as the sprint filter above, kept under its own storage key so
+// the two filters are independent. Releases are matched by name against each
+// space's own versions, so the filter only carries a name (null = "Auto —
+// next release per space").
+
+const MAX_RELEASE_NAME_LENGTH = 255;
+
+resolver.define('getDashboardReleaseFilter', async ({ context }) => {
+  const dashboardId = context?.extension?.dashboard?.id;
+  if (!dashboardId) return { filter: null };
+  try {
+    const filter = await kvs.get(`dashboard-release-filter:${dashboardId}`);
+    return { filter: filter ?? null };
+  } catch (e) {
+    return { filter: null, error: e.message };
+  }
+});
+
+resolver.define('setDashboardReleaseFilter', async ({ payload, context }) => {
+  const dashboardId = context?.extension?.dashboard?.id;
+  if (!dashboardId) return { error: 'No dashboard context.' };
+  const releaseName = payload?.releaseName ?? null;
+  if (releaseName !== null && (typeof releaseName !== 'string' || releaseName.length > MAX_RELEASE_NAME_LENGTH)) {
+    return { error: 'Invalid releaseName.' };
+  }
+  const filter = { releaseName: releaseName || null, updatedAt: Date.now() };
+  try {
+    await kvs.set(`dashboard-release-filter:${dashboardId}`, filter);
+    return { ok: true, filter };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
 // ── Shared: resolve which sprint a widget instance is rendering ───────────────
 // 'active' mode does a fresh lookup every call so widgets never go stale when a
 // sprint closes; 'fixed' mode pins to a specific (often closed) sprint id.

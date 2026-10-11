@@ -9,6 +9,7 @@ A standalone Atlassian Forge app providing six Jira dashboard gadgets for sprint
 | **TRI Rework** | Daily test-failure kickback count, as a chart, table ("Sprint Rework Events"), or both |
 | **TRI Cycle Time** | Per-issue business hours spent in In Progress / Blocked / Code Review / Test, with estimate-vs-actual highlighting |
 | **TRI Sprint Filter** | A live Space/Sprint picker other gadgets on the same dashboard can follow, so you only pick the sprint once (see "Dashboard sprint filter" below) |
+| **TRI Release Filter** | A live Release picker that TRI Release Capacity ("By space") and TRI Portfolio Distribution ("By release") can follow (see "Dashboard release filter" below) |
 | **TRI Velocity** | Capacity/Committed/Velocity per closed sprint or completed iteration, read from each space's Capacity data — one chart per configured space, with an optional combined Total (see "Velocity gadget" below) |
 
 The first four are ports of a reference Python reporting script (issue-changelog analysis + Excel dashboard) into live, self-configuring Jira gadgets. This project has no dependency on any other repo or app — it's a complete, self-contained Forge app you can `forge register` and deploy on its own.
@@ -46,6 +47,8 @@ static/gadgets/              React frontend (Vite)
     useDisplayMode.js            Shared chart/table/both view-mode logic (Scope Change, Rework)
     useDashboardFilter.js        Reads the TRI Sprint Filter gadget's current selection for this
                                  dashboard (storage + live Custom UI events)
+    useDashboardReleaseFilter.js Same idea for the TRI Release Filter gadget's selection (release
+                                 name only; null = Auto), used by Release Capacity/Portfolio Distribution
     useEffectiveSprintSource.js  Resolves each reporting gadget's actual Space/Sprint/Status-Mapping
                                  — own config, or the dashboard filter's override
     IssueLink.jsx                Shared "open this issue in Jira" link (uses router.open — plain
@@ -213,6 +216,16 @@ TRI Sprint Filter is a minimal gadget: its edit screen only asks for a Space, an
 Each of the four Space+Sprint reporting gadgets (Burndown, Scope Change, Rework, Cycle Time) has its own **"Use dashboard sprint filter"** checkbox (in Section 2, next to Sprint — off by default). When on, `useEffectiveSprintSource.js` overrides that gadget's own Space/Sprint with the filter's current value, falling back to its own configured Space/Sprint if no filter gadget exists yet on the dashboard. SP Field, Status Mapping, and Grace Window always stay per-gadget config — they're not part of the filter. TRI Velocity has the same checkbox, but only when configured with exactly one space, and only the Space part of the filter applies — see "Velocity gadget" above.
 
 Status Mapping is the one wrinkle: it's built against a specific project's actual status names, so it can't blindly follow a filter that might point at a different project. If the filter's Space matches what a gadget's mapping was configured against, the saved mapping is used unchanged. If the filter switches to a different Space, the gadget falls back to the same best-guess default mapping used the first time you pick a Space in edit mode, and shows a small "using a best-guess status mapping" note in its header. Re-edit the gadget while the filter points at that Space to fix the mapping properly.
+
+## Dashboard release filter
+
+TRI Release Filter mirrors the sprint filter but is fully independent of it: its own storage key (`dashboard-release-filter:<dashboardId>` via the `getDashboardReleaseFilter`/`setDashboardReleaseFilter` resolvers), its own event (`tri-release-filter-changed`), and its own hook (`useDashboardReleaseFilter.js`). The stored value is just `{ releaseName, updatedAt }` — releases are per-space Jira versions and the consuming resolvers already match a release **name** against each space's own versions, so no project key or ID is needed (`releaseName: null` = Auto, next release per space).
+
+- **Edit config** deliberately mirrors the consuming gadgets: Spaces (Release Mapping enabled), Default release, and Previous releases to list. The view's dropdown is the union of release names from `getReleaseCapacityRollup` for those spaces, so it matches the gadgets' lists when "Previous releases to list" matches.
+- **Seeding:** on first load with nothing stored, the filter view publishes its configured Default release. After that the stored selection wins; changing the Default in edit mode later does not override it.
+- **Consumers** opt in with a `useDashboardFilter` checkbox, shown and saved only in the mode where "one release across spaces" applies: TRI Release Capacity `bySpace` and TRI Portfolio Distribution `byRelease`. In the other modes the flag is saved as false and the gadget ignores the filter. While engaged, the gadget's own Release dropdown is hidden and the fetch uses the filter's release; with no filter set, it falls back to its own release. The fetch effect waits for the filter's initial load (`filterLoading`) so it never fires once with the wrong release.
+- A stored release name that has dropped out of the list (renamed, or aged out of "previous releases to list") is still shown as an option rather than silently reset.
+- As with the sprint filter, adding more than one TRI Release Filter to a dashboard means the last change wins.
 
 ### Known simplifications
 

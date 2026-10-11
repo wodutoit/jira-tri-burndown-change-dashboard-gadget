@@ -12,6 +12,8 @@ import TriCycleTimeGadgetView from './gadget/TriCycleTimeGadgetView';
 import TriCycleTimeGadgetEdit from './gadget/TriCycleTimeGadgetEdit';
 import TriSprintFilterGadgetView from './gadget/TriSprintFilterGadgetView';
 import TriSprintFilterGadgetEdit from './gadget/TriSprintFilterGadgetEdit';
+import TriReleaseFilterGadgetView from './gadget/TriReleaseFilterGadgetView';
+import TriReleaseFilterGadgetEdit from './gadget/TriReleaseFilterGadgetEdit';
 import TriVelocityGadgetView from './gadget/TriVelocityGadgetView';
 import TriVelocityGadgetEdit from './gadget/TriVelocityGadgetEdit';
 import TriReleaseCapacityGadgetView from './gadget/TriReleaseCapacityGadgetView';
@@ -33,6 +35,7 @@ const GADGETS = {
   'sprint-tri-rework-gadget': { view: TriReworkGadgetView, edit: TriReworkGadgetEdit },
   'sprint-tri-cycle-time-gadget': { view: TriCycleTimeGadgetView, edit: TriCycleTimeGadgetEdit },
   'sprint-tri-filter-gadget': { view: TriSprintFilterGadgetView, edit: TriSprintFilterGadgetEdit },
+  'sprint-tri-release-filter-gadget': { view: TriReleaseFilterGadgetView, edit: TriReleaseFilterGadgetEdit },
   'sprint-tri-velocity-gadget': { view: TriVelocityGadgetView, edit: TriVelocityGadgetEdit },
   'sprint-tri-release-capacity-gadget': { view: TriReleaseCapacityGadgetView, edit: TriReleaseCapacityGadgetEdit },
   'sprint-tri-portfolio-distribution-gadget': { view: TriPortfolioDistributionGadgetView, edit: TriPortfolioDistributionGadgetEdit },
