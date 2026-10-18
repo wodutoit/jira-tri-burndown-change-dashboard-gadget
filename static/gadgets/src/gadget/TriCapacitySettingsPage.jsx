@@ -35,6 +35,11 @@ export default function TriCapacitySettingsPage() {
   const [pendingField, setPendingField] = useState(null);
   const [pf, setPf] = useState({ warn: '10', crit: '20', floor: '1' });
   const [pfError, setPfError] = useState(null);
+  // Save to Confluence: inputs as typed; validated and stored server-side.
+  const [cf, setCf] = useState({ spaceKey: '', parent: '' });
+  const [cfBusy, setCfBusy] = useState(false);
+  const [cfError, setCfError] = useState(null);
+  const [cfSaved, setCfSaved] = useState(false);
 
   useEffect(() => {
     if (!settings) return;
@@ -44,6 +49,11 @@ export default function TriCapacitySettingsPage() {
       floor: String(settings.portfolioMinTolerancePp),
     });
   }, [settings?.portfolioWarnPct, settings?.portfolioCriticalPct, settings?.portfolioMinTolerancePp]);
+
+  useEffect(() => {
+    if (!settings) return;
+    setCf({ spaceKey: settings.confluenceSpaceKey || '', parent: settings.confluenceParentId || '' });
+  }, [settings?.confluenceSpaceKey, settings?.confluenceParentId]);
 
   const portfolioOn = !!settings?.portfolioPlanningEnabled;
   const portfolioFieldId = settings?.portfolioFieldId || '';
@@ -124,6 +134,24 @@ export default function TriCapacitySettingsPage() {
       } else { setSettings(res.settings); setSaved(true); setError(null); }
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Server validates the space/parent against Confluence and owns these fields.
+  const saveConfluence = async (enabled) => {
+    setCfBusy(true);
+    setCfError(null);
+    setCfSaved(false);
+    try {
+      const res = await invoke('setConfluenceExportSettings', {
+        projectKey, enabled, spaceKey: cf.spaceKey, parentRef: cf.parent,
+      });
+      if (res.error) setCfError(res.error);
+      else { setSettings(res.settings); setCfSaved(true); }
+    } catch (e) {
+      setCfError(String(e.message || e));
+    } finally {
+      setCfBusy(false);
     }
   };
 
@@ -327,6 +355,62 @@ export default function TriCapacitySettingsPage() {
           often land in the Done category (e.g. a "Not Required" status). Check any Done-category status here that
           shouldn't count toward Velocity. Applies to both Scrum's and Kanban's Velocity calculation; has no effect
           on Committed.
+        </div>
+      </Section>
+
+      <div style={S.divider} />
+
+      <Section title="Save to Confluence">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={!!settings.confluenceExportEnabled}
+            disabled={cfBusy}
+            onChange={e => saveConfluence(e.target.checked)}
+          />
+          Enable "Save to Confluence" on the Capacity tab
+        </label>
+        <div style={S.hint}>
+          Adds a button that saves a snapshot of the Capacity table to a Confluence page named
+          "&lt;space name&gt;-Capacity Log" — readable tables plus a JSON block for AI agents and reporting. If the
+          page already exists you choose to overwrite it or create a new, timestamped page. The page is written as
+          the person who clicks the button, so they need permission to add pages in the target Confluence space.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Confluence space key</div>
+            <input
+              type="text" value={cf.spaceKey} placeholder="e.g. ENG"
+              onChange={e => setCf(c => ({ ...c, spaceKey: e.target.value }))}
+              style={{ ...S.select, width: 200 }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Parent page or folder (optional)</div>
+            <input
+              type="text" value={cf.parent} placeholder="Paste the page/folder URL or its numeric ID"
+              onChange={e => setCf(c => ({ ...c, parent: e.target.value }))}
+              style={S.select}
+            />
+            <div style={S.hint}>Must be in the space above. Leave blank to save at the top level of the space.</div>
+          </div>
+          <button
+            onClick={() => saveConfluence(true)}
+            disabled={cfBusy || !cf.spaceKey.trim()}
+            style={{ ...S.smallBtn, alignSelf: 'flex-start', opacity: cfBusy ? 0.6 : 1 }}
+          >
+            {cfBusy ? 'Checking…' : 'Validate and save target'}
+          </button>
+          {settings.confluenceExportEnabled && settings.confluenceSpaceId && !cfBusy && (
+            <div style={S.hint}>
+              Saving to <strong>{settings.confluenceSpaceName}</strong>
+              {settings.confluenceParentId
+                ? <> under {settings.confluenceParentType} <strong>{settings.confluenceParentTitle}</strong></>
+                : ' (top level)'}.
+            </div>
+          )}
+          {cfSaved && !cfBusy && <div style={S.hint}>Saved.</div>}
+          {cfError && <div style={S.error}>{cfError}</div>}
         </div>
       </Section>
 

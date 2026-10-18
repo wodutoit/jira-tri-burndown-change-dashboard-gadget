@@ -2,6 +2,7 @@ const Resolver = require('@forge/resolver').default;
 const { route, asUser } = require('@forge/api');
 const { kvs } = require('@forge/kvs');
 const crypto = require('crypto');
+const { validateSnapshot, parseParentRef, baseTitle, timestampedTitle, renderStorage } = require('./confluenceExport');
 const { validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, summarizeNoEstimate, countNoEstimate, mergeSpaceDistributions, resolveEffectiveAllocation } = require('./portfolio');
 
 const resolver = new Resolver();
@@ -1417,7 +1418,21 @@ const CAPACITY_SETTINGS_DEFAULTS = {
   portfolioWarnPct: 10,
   portfolioCriticalPct: 20,
   portfolioMinTolerancePp: 1,
+  // Save to Confluence (opt-in per space). Written ONLY by
+  // setConfluenceExportSettings, which validates the target against Confluence;
+  // setCapacitySettings preserves whatever is stored and ignores client values.
+  confluenceExportEnabled: false,
+  confluenceSpaceKey: '',
+  confluenceSpaceId: '',
+  confluenceSpaceName: '',
+  confluenceParentId: '',
+  confluenceParentType: '',
+  confluenceParentTitle: '',
 };
+const CONFLUENCE_SETTING_KEYS = [
+  'confluenceExportEnabled', 'confluenceSpaceKey', 'confluenceSpaceId', 'confluenceSpaceName',
+  'confluenceParentId', 'confluenceParentType', 'confluenceParentTitle',
+];
 const CAPACITY_BOARD_TYPE_OVERRIDE_OPTIONS = ['auto', 'scrum', 'kanban'];
 
 // Same finite-number-or-default coercion for settings where 0 is a valid
@@ -1502,8 +1517,169 @@ resolver.define('setCapacitySettings', async ({ payload }) => {
     }
   }
   try {
+    // Confluence target fields are server-owned: carry over the stored values.
+    const stored = (await kvs.get(`capacity-settings:${projectKey}`)) || {};
+    for (const k of CONFLUENCE_SETTING_KEYS) merged[k] = stored[k] ?? CAPACITY_SETTINGS_DEFAULTS[k];
     await kvs.set(`capacity-settings:${projectKey}`, merged);
     return { ok: true, settings: merged };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+// ── Save Capacity to Confluence ──────────────────────────────────────────────
+// Writes a snapshot page via the Confluence v2 REST API as the viewing user
+// (asUser), so Confluence's own permissions decide who can write where. The
+// target (space + optional parent page/folder) is configured per Jira space on
+// the Capacity Planning settings page and validated there. See
+// confluenceExport.js for validation/rendering. NOTE: this is a cross-product
+// call from a Jira module — the app must also be installed on Confluence.
+
+function confluenceHttpError(status, what) {
+  if (status === 401 || status === 403) {
+    return `Confluence refused ${what} (HTTP ${status}). Check that the app is installed on Confluence on this site, that you've approved its Confluence access, and that you have permission in the target space.`;
+  }
+  if (status === 404) return `${what}: not found in Confluence (HTTP 404).`;
+  return `${what} failed (HTTP ${status}).`;
+}
+
+async function confluenceGet(r, what) {
+  const res = await asUser().requestConfluence(r, { headers: { Accept: 'application/json' } });
+  if (!res.ok) return { error: confluenceHttpError(res.status, what), status: res.status };
+  return { json: await res.json() };
+}
+
+function confluencePageUrl(json) {
+  const base = json?._links?.base;
+  const webui = json?._links?.webui;
+  return base && webui ? `${base}${webui}` : null;
+}
+
+resolver.define('setConfluenceExportSettings', async ({ payload }) => {
+  const { projectKey, enabled, spaceKey, parentRef } = payload ?? {};
+  if (!projectKey) return { error: 'Missing project key.' };
+  try {
+    const current = await getCapacitySettingsFor(projectKey);
+    const next = { ...current };
+    if (!enabled) {
+      next.confluenceExportEnabled = false;
+    } else {
+      const key = typeof spaceKey === 'string' ? spaceKey.trim() : '';
+      if (!/^[~A-Za-z0-9_-]{1,255}$/.test(key)) return { error: 'Enter a valid Confluence space key (e.g. ENG).' };
+      const sp = await confluenceGet(route`/wiki/api/v2/spaces?keys=${key}&limit=1`, 'Looking up the Confluence space');
+      if (sp.error) return { error: sp.error };
+      const space = sp.json?.results?.[0];
+      if (!space) return { error: `No Confluence space with key "${key}" was found, or you can't see it.` };
+
+      let parent = { id: '', type: '', title: '' };
+      if (typeof parentRef === 'string' && parentRef.trim()) {
+        const id = parseParentRef(parentRef);
+        if (!id) return { error: 'Parent must be a Confluence page/folder URL or numeric ID (leave blank for the space root).' };
+        let found = await confluenceGet(route`/wiki/api/v2/pages/${id}`, 'Looking up the parent page');
+        let type = 'page';
+        if (found.error && found.status === 404) {
+          found = await confluenceGet(route`/wiki/api/v2/folders/${id}`, 'Looking up the parent folder');
+          type = 'folder';
+        }
+        if (found.error) return { error: found.error };
+        if (String(found.json.spaceId) !== String(space.id)) {
+          return { error: `That ${type} isn't in the "${key}" space.` };
+        }
+        parent = { id: String(found.json.id), type, title: String(found.json.title || '') };
+      }
+      Object.assign(next, {
+        confluenceExportEnabled: true,
+        confluenceSpaceKey: space.key,
+        confluenceSpaceId: String(space.id),
+        confluenceSpaceName: String(space.name || space.key),
+        confluenceParentId: parent.id,
+        confluenceParentType: parent.type,
+        confluenceParentTitle: parent.title,
+      });
+    }
+    await kvs.set(`capacity-settings:${projectKey}`, next);
+    return { ok: true, settings: next };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
+resolver.define('saveCapacityToConfluence', async ({ payload }) => {
+  const { projectKey, snapshot: rawSnapshot, mode } = payload ?? {};
+  if (!projectKey || typeof projectKey !== 'string') return { error: 'Missing project key.' };
+  try {
+    const settings = await getCapacitySettingsFor(projectKey);
+    if (!settings.confluenceExportEnabled || !settings.confluenceSpaceId) {
+      return { error: 'Save to Confluence is not configured for this space.' };
+    }
+    const { snapshot, error: vErr } = validateSnapshot(rawSnapshot);
+    if (vErr) return { error: vErr };
+
+    const projectName = await getSpaceName(projectKey);
+    const generatedAt = new Date().toISOString();
+    const body = renderStorage({
+      projectKey, projectName,
+      boardType: snapshot.periodType === 'iteration' ? 'kanban' : 'scrum',
+      baseCapacitySp: settings.baseCapacitySp,
+      releaseMappingEnabled: !!settings.releaseMappingEnabled,
+      releaseThresholdPct: settings.releaseThresholdPct,
+      generatedAt,
+    }, snapshot);
+
+    const spaceId = settings.confluenceSpaceId;
+    const title = baseTitle(projectName);
+    const found = await confluenceGet(
+      route`/wiki/api/v2/pages?space-id=${spaceId}&title=${title}&status=current&limit=1`,
+      'Checking for an existing Capacity Log page'
+    );
+    if (found.error) return { error: found.error };
+    const existing = found.json?.results?.[0] ?? null;
+    const writeMode = mode === 'overwrite' || mode === 'new' ? mode : 'check';
+
+    if (existing && writeMode === 'check') {
+      return { status: 'exists', page: { id: String(existing.id), title: existing.title, url: confluencePageUrl(existing) } };
+    }
+
+    if (existing && writeMode === 'overwrite') {
+      const cur = await confluenceGet(route`/wiki/api/v2/pages/${existing.id}`, 'Reading the existing page');
+      if (cur.error) return { error: cur.error };
+      const res = await asUser().requestConfluence(route`/wiki/api/v2/pages/${existing.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          id: String(existing.id), status: 'current', title,
+          body: { representation: 'storage', value: body },
+          version: { number: (cur.json?.version?.number ?? 1) + 1, message: 'Capacity snapshot (TRI Sprint Dashboard Gadgets)' },
+        }),
+      });
+      if (!res.ok) {
+        return { error: res.status === 409
+          ? 'The page was changed in Confluence while saving. Try again.'
+          : confluenceHttpError(res.status, 'Updating the page') };
+      }
+      const out = await res.json();
+      return { status: 'updated', page: { id: String(out.id), title, url: confluencePageUrl(out) } };
+    }
+
+    // Create: no page yet, or the user asked for a new (timestamped) page.
+    const newTitle = existing ? timestampedTitle(projectName) : title;
+    const createBody = {
+      spaceId, status: 'current', title: newTitle,
+      body: { representation: 'storage', value: body },
+    };
+    if (settings.confluenceParentId) createBody.parentId = settings.confluenceParentId;
+    const res = await asUser().requestConfluence(route`/wiki/api/v2/pages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(createBody),
+    });
+    if (!res.ok) {
+      return { error: res.status === 400 && existing
+        ? `A page titled "${newTitle}" already exists — wait a minute and try again.`
+        : confluenceHttpError(res.status, 'Creating the page') };
+    }
+    const out = await res.json();
+    return { status: 'created', page: { id: String(out.id), title: newTitle, url: confluencePageUrl(out) } };
   } catch (e) {
     return { error: e.message };
   }

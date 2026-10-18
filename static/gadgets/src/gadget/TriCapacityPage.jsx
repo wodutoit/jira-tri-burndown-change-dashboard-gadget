@@ -46,6 +46,8 @@ export default function TriCapacityPage() {
     return <div style={{ padding: 20, fontSize: 13, fontFamily: 'inherit', color: 'var(--text-subtle)' }}>Loading…</div>;
   }
 
+  const confluenceReady = !!(settings?.confluenceExportEnabled && settings?.confluenceSpaceId);
+
   return (
     <div style={{ ...S.wrap, maxWidth: 1100 }}>
       <h2 style={{ margin: 0, fontSize: 16, color: 'var(--text)' }}>Capacity</h2>
@@ -70,6 +72,7 @@ export default function TriCapacityPage() {
             releaseMappingEnabled={settings.releaseMappingEnabled}
             releaseThresholdPct={settings.releaseThresholdPct}
             releaseOptions={releaseOptions}
+            confluenceEnabled={confluenceReady}
           />
         ) : (
           <CapacityScrumTab
@@ -81,6 +84,7 @@ export default function TriCapacityPage() {
             releaseMappingEnabled={settings.releaseMappingEnabled}
             releaseThresholdPct={settings.releaseThresholdPct}
             releaseOptions={releaseOptions}
+            confluenceEnabled={confluenceReady}
             portfolioEnabled={!!settings.portfolioPlanningEnabled && !!settings.portfolioFieldId}
             portfolioThresholds={{
               warnPct: settings.portfolioWarnPct,

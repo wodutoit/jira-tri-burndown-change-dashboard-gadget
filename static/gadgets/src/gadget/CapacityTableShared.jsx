@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { editStyles as S } from './sprintConfigShared';
-import { statusStyle, classifyReleaseStatus } from './gadgetUtils';
+import { statusStyle } from './gadgetUtils';
+import { summarizeReleases } from './capacitySnapshot';
 import { buildPortfolioRows } from './portfolioModel';
 import PortfolioBar from './PortfolioBar';
 
@@ -109,12 +110,6 @@ function findRelease(releaseId, releaseOptions) {
   return releaseOptions.find(v => v.id === releaseId) || null;
 }
 
-function releaseLabel(releaseId, releaseOptions) {
-  if (!releaseId) return null;
-  const v = findRelease(releaseId, releaseOptions);
-  return v ? v.name : '(deleted release)';
-}
-
 function sortReleases(versions) {
   return [...versions].sort((a, b) => {
     if (a.releaseDate && b.releaseDate) return a.releaseDate < b.releaseDate ? -1 : 1;
@@ -160,51 +155,16 @@ export function ReleaseSelectCell({ releaseId, releaseOptions, onChange }) {
 // and Portfolio button under each release's Status chip:
 //   { thresholds, allocations, actuals, options, optionsLoaded, actualsLoading, error, onOpen(releaseId) }
 export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, baseCapacitySp, thresholdPct, portfolio = null }) {
-  const visibleReleaseIds = new Set(rows.filter(r => r.releaseId).map(r => r.releaseId));
-  const groups = new Map();
-  for (const row of allRows) {
-    if (!row.releaseId || !visibleReleaseIds.has(row.releaseId)) continue;
-    if (!groups.has(row.releaseId)) groups.set(row.releaseId, []);
-    groups.get(row.releaseId).push(row);
-  }
-
-  const summaries = [...groups.entries()].map(([releaseId, group]) => {
-    const totalCapacity = group.reduce((a, r) => a + (r.capacitySp ?? baseCapacitySp ?? 0), 0);
-    const totalCommitted = group.reduce((a, r) => a + (r.committedSp ?? 0), 0);
-    // Same figure classifyReleaseStatus derives internally for the tier
-    // check below — computed once here so it can also be shown as its own
-    // column, instead of being an invisible intermediate value.
-    const thresholdCapacity = totalCapacity * (thresholdPct / 100);
-    // A future/in-progress sprint's velocity reads as 0 (nothing's Done yet)
-    // long before it means anything — averaging that 0 in would drag the
-    // release average down purely because the release isn't finished, not
-    // because the finished sprints underperformed. Only a >0 recorded
-    // velocity counts as "has velocity" here.
-    const withVelocity = group.filter(r => r.velocitySp != null && r.velocitySp > 0);
-    const avgVelocity = withVelocity.length
-      ? withVelocity.reduce((a, r) => a + r.velocitySp, 0) / withVelocity.length
-      : 0;
-
-    // Tier boundaries come from the shared classifier (also used by the TRI
-    // Release Capacity gadget's chart) — presentation now matches that
-    // gadget's traffic-light convention: Over Threshold is amber (still
-    // within capacity, buffer eaten into), Over Capacity is red (no buffer
-    // left at all). Previously both over-tiers rendered as the same red
-    // chip; the user asked for the distinction to match the gadget.
-    const { tier } = classifyReleaseStatus(totalCommitted, totalCapacity, thresholdPct);
-    const STATUS_LABELS = {
-      none: { label: '—', bg: 'transparent', text: 'var(--text-subtlest)' },
-      overCapacity: { label: 'Over Capacity', bg: 'var(--over-bg)', text: 'var(--over-text)' },
-      overThreshold: { label: `Over Threshold (${thresholdPct}%)`, bg: 'var(--filling-bg)', text: 'var(--filling-text)' },
-      within: { label: `Within Threshold (${thresholdPct}%)`, bg: 'var(--ok-bg)', text: 'var(--ok-text)' },
-    };
-    const status = STATUS_LABELS[tier];
-
-    return {
-      releaseId, name: releaseLabel(releaseId, releaseOptions) ?? releaseId,
-      sprintCount: group.length, totalCapacity, thresholdCapacity, totalCommitted, avgVelocity, status,
-    };
-  });
+  const STATUS_LABELS = {
+    none: { label: '—', bg: 'transparent', text: 'var(--text-subtlest)' },
+    overCapacity: { label: 'Over Capacity', bg: 'var(--over-bg)', text: 'var(--over-text)' },
+    overThreshold: { label: `Over Threshold (${thresholdPct}%)`, bg: 'var(--filling-bg)', text: 'var(--filling-text)' },
+    within: { label: `Within Threshold (${thresholdPct}%)`, bg: 'var(--ok-bg)', text: 'var(--ok-text)' },
+  };
+  // Over Threshold is amber (still within capacity, buffer eaten into), Over
+  // Capacity is red — matches the TRI Release Capacity gadget's convention.
+  const summaries = summarizeReleases({ rows, allRows, releaseOptions, baseCapacitySp, thresholdPct })
+    .map(s => ({ ...s, status: STATUS_LABELS[s.tier] }));
 
   return (
     <table style={S.table}>

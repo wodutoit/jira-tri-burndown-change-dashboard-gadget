@@ -5,6 +5,8 @@ import { useCapacityRows } from './useCapacityRows';
 import { CapacityTableRow, HideClosedToggle, fmtDate, ReleaseSelectCell, ReleasesSummaryTable } from './CapacityTableShared';
 import KanbanIterationDialog from './KanbanIterationDialog';
 import { localTodayISO } from './gadgetUtils';
+import SaveToConfluenceButton from './SaveToConfluenceButton';
+import { buildCapacitySnapshot } from './capacitySnapshot';
 
 const STATUS_OPTIONS = [
   { value: 'future', label: 'Future' },
@@ -41,7 +43,7 @@ function computeNextIterationDefaults(iterations, lengthWeeks, baseCapacitySp) {
 
 export default function CapacityKanbanTab({
   projectKey, spFieldId, graceWindowHours, baseCapacitySp, defaultIterationLengthWeeks,
-  releaseMappingEnabled, releaseThresholdPct, releaseOptions,
+  releaseMappingEnabled, releaseThresholdPct, releaseOptions, confluenceEnabled = false,
 }) {
   const {
     rows, setRows, loading, error, setError, reload,
@@ -131,7 +133,7 @@ export default function CapacityKanbanTab({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {error && <div style={S.error}>{error}</div>}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
         <button onClick={openAdd} style={S.btn}>+ Add Iteration</button>
         <HideClosedToggle checked={hideCompleted} onChange={setHideCompleted} label="Hide completed iterations" />
         {!hideCompleted && (
@@ -143,6 +145,17 @@ export default function CapacityKanbanTab({
               ))}
             </select>
           </label>
+        )}
+        {confluenceEnabled && (
+          <div style={{ marginLeft: 'auto' }}>
+            <SaveToConfluenceButton
+              projectKey={projectKey}
+              getSnapshot={() => buildCapacitySnapshot({
+                periodType: 'iteration', hideClosed: hideCompleted, visibleRows, allRows: rows, releaseOptions,
+                baseCapacitySp, releaseMappingEnabled, thresholdPct: releaseThresholdPct,
+              })}
+            />
+          </div>
         )}
       </div>
 

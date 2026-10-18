@@ -69,4 +69,5 @@ None of these are checkable from code — they're steps in the Developer Console
 | Add any `fetch()`/external URL call in `src/index.js` or the gadget frontend | Re-run the Basic Auth / secrets grep above; update `PRIVACY.md` if it changes what leaves Atlassian's platform |
 | Change what's stored via `@forge/kvs` | Update `PRIVACY.md`'s "What the app stores" section |
 | Rename the app or change its icon/branding | Re-check the trademark and "X for Jira" naming rule above |
+| Add Confluence (or any other product) scopes/calls | Cross-product Forge calls from a Marketplace-listed app are unconfirmed (see `PROJECT-CONTEXT.md`, Save to Confluence) — get Atlassian's answer first; update `PRIVACY.md` and the "Third-party service disclosure" / "Security and authentication" notes above |
 | Add a paid tier | This whole "Listing and pricing" section changes — billing/refund terms, valid company email, `TERMS.md` all need revisiting |

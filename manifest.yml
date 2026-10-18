@@ -199,6 +199,11 @@ permissions:
     - read:project.property:jira
     - write:project.property:jira
     - write:sprint:jira-software
+    # Save Capacity to Confluence (cross-product: requires the app on Confluence too)
+    - read:space:confluence
+    - read:page:confluence
+    - write:page:confluence
+    - read:folder:confluence
 
 app:
   runtime:

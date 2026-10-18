@@ -7,13 +7,15 @@ import ScrumSprintEditDialog from './ScrumSprintEditDialog';
 import PortfolioDialog from './PortfolioDialog';
 import { usePortfolio } from './usePortfolio';
 import { buildPortfolioRows } from './portfolioModel';
+import SaveToConfluenceButton from './SaveToConfluenceButton';
+import { buildCapacitySnapshot } from './capacitySnapshot';
 
 const CLOSED_LIMIT_OPTIONS = [3, 5, 10, 15, 'all'];
 
 export default function CapacityScrumTab({
   projectKey, boardId, spFieldId, graceWindowHours, baseCapacitySp,
   releaseMappingEnabled, releaseThresholdPct, releaseOptions,
-  portfolioEnabled = false, portfolioThresholds = null,
+  portfolioEnabled = false, portfolioThresholds = null, confluenceEnabled = false,
 }) {
   const [closedLimit, setClosedLimit] = useState(10);
 
@@ -124,7 +126,7 @@ export default function CapacityScrumTab({
         )}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
         <HideClosedToggle checked={hideClosed} onChange={setHideClosed} label="Hide closed sprints" />
         {!hideClosed && (
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-subtle)' }}>
@@ -135,6 +137,17 @@ export default function CapacityScrumTab({
               ))}
             </select>
           </label>
+        )}
+        {confluenceEnabled && (
+          <div style={{ marginLeft: 'auto' }}>
+            <SaveToConfluenceButton
+              projectKey={projectKey}
+              getSnapshot={() => buildCapacitySnapshot({
+                periodType: 'sprint', hideClosed, visibleRows, allRows: rows, releaseOptions,
+                baseCapacitySp, releaseMappingEnabled, thresholdPct: releaseThresholdPct,
+              })}
+            />
+          </div>
         )}
       </div>
 
