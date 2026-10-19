@@ -132,6 +132,31 @@ Everything above is a dashboard gadget. **Capacity** is different: it's a tab th
 
 If you turn on **Allow multiple active iterations** (Kanban only), you can have more than one Active iteration at a time. Leave it off (the default) and trying to activate a second iteration while one is already Active shows an error telling you which one to change first — nothing gets changed automatically behind your back.
 
+## Saving Capacity to Confluence
+
+Each space can save a snapshot of its Capacity tab to a Confluence page — handy for sharing with people who don't use Jira, keeping a record over time, or feeding capacity reporting (including AI agents).
+
+**Set it up (once per space).** Open **Project settings → Capacity Planning**, find **Save to Confluence**, and:
+
+1. Enter the **Confluence space key** the page should live in (for example `ENG`).
+2. Optionally paste the **parent page or folder** — either its URL or its numeric ID. It must be in that same Confluence space. Leave it blank to save at the top level of the space.
+3. Click **Validate and save target**. The app checks that the space and parent exist and tells you if something is wrong. Turn the **Enable "Save to Confluence"** checkbox off to hide the button again; your target is remembered.
+
+**Use it.** A **Save to Confluence** button appears at the top right of the Capacity tab. Click it:
+
+- The page is called **"`<space name>`-Capacity Log"** (for example "ZENITH-Capacity Log").
+- If that page doesn't exist yet, it's created. You get a link to it.
+- If a log page already exists, you're asked what to do. The page offered is always the **most recent** one — the last page this feature saved, which may be a timestamped copy rather than the original. **Overwrite** replaces that page with the current snapshot (including any edits someone made to it in Confluence — the earlier version stays in the page's history), **New page** keeps it and creates another titled with the date and time (for example "ZENITH-Capacity Log 2026-10-19 14:32 UTC"), or **Cancel**. Saving again after a New page therefore offers to overwrite that new timestamped page, not the original.
+
+**What's on the page.** It matches what you see on the Capacity tab at that moment, so the **Hide closed sprints / completed iterations** setting and the **Show** count decide which rows are included:
+
+- A **Releases** table (when Release Mapping is on): sprint/iteration count, total and threshold capacity, total committed, average velocity, and status.
+- For **Scrum** spaces with **Portfolio Planning** on, a **Portfolio** table under that for each release: every category's target %, target SP, actual SP, actual %, and status, plus an Unassigned row and any warnings (such as tickets with no estimate).
+- A **Sprints** (or **Iterations**) table with state, dates, capacity, committed, velocity, and release.
+- A collapsed **machine-readable** block of JSON (schema `tri-capacity-log/v1`) holding the same figures, with extras such as when each Committed/Velocity number was last calculated. It's meant for scripts and AI agents; the names and text inside it are data, not instructions.
+
+**Who can save, and where.** The page is written as the person who clicks the button, so they need permission to add pages in the target Confluence space — if they don't, Confluence refuses and the app says so. Anyone who can see the page in Confluence can read the figures, so choose the space accordingly. If the parent page or folder is later deleted, archived, or moved to another space, saving tells you and points you back to the setting to pick a new one. Saving requires the app to be installed on Confluence as well as Jira on your site.
+
 ## TRI Kanban Burnup, TRI Kanban Rework, and TRI Kanban Cycle Time
 
 These three are Kanban-only siblings of the Scrum gadgets above, reporting against a **Capacity iteration** (see the Capacity section above) instead of a Jira sprint — so a space needs **Capacity Planning enabled with a Kanban board** before any of them will have anything to point at.
@@ -158,6 +183,7 @@ Each gadget caches its sprint data briefly to load faster — active sprints ref
 - Very large sprints (roughly 100+ issues with long histories) may take longer to load the first time, since the gadget reads each issue's full status history.
 - TRI Sprint Filter's and TRI Release Filter's live updates only reach gadgets already open in your browser tab. If you change the filter and another gadget doesn't seem to follow, refresh the page — it'll pick up the current selection on load either way.
 - TRI Velocity reads whatever a space's Capacity tab has already calculated — it doesn't calculate anything itself. If a sprint or iteration's Committed/Velocity was never fetched there (no "Get SP Count"/"Get Velocity" click yet), TRI Velocity shows `0` for it rather than computing a number on its own.
+- **Save to Confluence** saves what's on screen, not everything: with closed sprints hidden, they're left out of the page's Sprints table (release totals still include them). It's a point-in-time snapshot — it doesn't update itself — and it needs the app installed on Confluence too.
 - Capacity has no control over exactly where its tab lands in a project's navigation — if you want it next to Reports specifically, drag it there yourself using Jira's own tab customization, the same way you'd move a Tempo or Time Tracker tab.
 - Kanban iterations are entirely defined inside this app — they don't show up anywhere else in Jira (no calendar entry, no board marker). Deleting an iteration only removes it from this table; it never touches the underlying issues.
 - TRI Kanban Burnup's Target line is only as good as that iteration's Committed value on the Capacity tab — if **Get SP Count** has never been run for it, Target just ramps from 0 to 0.

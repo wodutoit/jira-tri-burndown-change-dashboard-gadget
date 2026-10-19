@@ -7,6 +7,14 @@ const SCHEMA = 'tri-capacity-log/v1';
 const MAX_PERIODS = 500;
 const MAX_RELEASES = 200;
 const RELEASE_STATUSES = ['within_threshold', 'over_threshold', 'over_capacity', 'no_capacity'];
+const PORTFOLIO_STATUSES = ['ok', 'warn', 'critical', 'none'];
+const PORTFOLIO_STATUS_TEXT = {
+  ok: 'Within threshold',
+  warn: 'Outside warn threshold',
+  critical: 'Outside critical threshold',
+  none: 'No data yet',
+};
+const MAX_CATEGORIES = 100;
 const STATUS_TEXT = {
   within_threshold: 'Within threshold',
   over_threshold: 'Over threshold',
@@ -31,6 +39,34 @@ function isoOrNull(v) {
 
 function escapeXml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function validatePortfolio(p) {
+  if (!p || typeof p !== 'object') return null;
+  const status = s => (PORTFOLIO_STATUSES.includes(s) ? s : 'none');
+  return {
+    basis: p.basis === 'committed' ? 'committed' : 'current',
+    hasAllocation: !!p.hasAllocation,
+    isDefaultAllocation: !!p.isDefaultAllocation,
+    totalCommitted: num(p.totalCommitted) ?? 0,
+    totalCapacity: num(p.totalCapacity) ?? 0,
+    thresholdCapacity: num(p.thresholdCapacity) ?? 0,
+    categories: (Array.isArray(p.categories) ? p.categories : []).slice(0, MAX_CATEGORIES).map(c => ({
+      id: str(String(c?.id ?? ''), 80),
+      name: str(c?.name),
+      targetPct: num(c?.targetPct) ?? 0,
+      targetSp: num(c?.targetSp),
+      actualSp: num(c?.actualSp) ?? 0,
+      actualPct: num(c?.actualPct),
+      status: status(c?.status),
+    })),
+    unassigned: {
+      actualSp: num(p.unassigned?.actualSp) ?? 0,
+      actualPct: num(p.unassigned?.actualPct),
+      status: status(p.unassigned?.status),
+    },
+    notes: (Array.isArray(p.notes) ? p.notes : []).slice(0, 10).map(n => str(n, 300)).filter(Boolean),
+  };
 }
 
 // Never trust the client's shape: it's re-built field by field with caps, so
@@ -68,6 +104,7 @@ function validateSnapshot(raw) {
     totalCommitted: num(r?.totalCommitted) ?? 0,
     avgVelocity: num(r?.avgVelocity) ?? 0,
     status: RELEASE_STATUSES.includes(r?.status) ? r.status : 'no_capacity',
+    ...(r?.portfolio ? { portfolio: validatePortfolio(r.portfolio) } : {}),
   }));
   return {
     snapshot: {
@@ -100,6 +137,14 @@ function timestampedTitle(projectName, now = new Date()) {
   return `${baseTitle(projectName)} ${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 }
 
+// True for "<base>" and "<base> YYYY-MM-DD HH:mm UTC" — the only titles this
+// feature ever writes — so an unrelated page that merely starts with the same
+// words (e.g. "<base> Notes") is never mistaken for a log page.
+function isLogTitle(title, projectName) {
+  const base = baseTitle(projectName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${base}( \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC)?$`).test(String(title ?? ''));
+}
+
 function fmtNum(n) {
   return n === null || n === undefined ? '—' : String(n);
 }
@@ -125,6 +170,7 @@ function buildMachineData(meta, snapshot) {
       periodType: snapshot.periodType,
     },
     settings: {
+      ...(meta.portfolio ? { portfolio: meta.portfolio } : {}),
       baseCapacity: meta.baseCapacitySp,
       releaseMappingEnabled: meta.releaseMappingEnabled,
       releaseThresholdPct: meta.releaseThresholdPct,
@@ -133,6 +179,31 @@ function buildMachineData(meta, snapshot) {
     releases: snapshot.releases,
     periods: snapshot.periods,
   };
+}
+
+function fmtPct(n) {
+  return n === null || n === undefined ? '—' : `${Math.round(n * 10) / 10}%`;
+}
+
+// One sub-table per release (Confluence has no reliable nested tables, so each
+// sits under the Releases table with its own heading).
+function renderPortfolio(release, meta) {
+  const p = release.portfolio;
+  const basisNote = p.basis === 'committed'
+    ? `Target SP is each category's target % of the release's threshold capacity (${fmtNum(p.thresholdCapacity)} SP, ${meta.releaseThresholdPct}% of total capacity ${fmtNum(p.totalCapacity)} SP); actuals are committed story points (${fmtNum(p.totalCommitted)} SP).`
+    : `Actuals are the current story points in the release (${fmtNum(p.totalCommitted)} SP).`;
+  const allocNote = !p.hasAllocation
+    ? 'No target allocation is set for this release, so categories are not rated.'
+    : p.isDefaultAllocation ? 'Targets come from the space default allocation.' : "Targets are this release's own allocation.";
+  const warn = meta.portfolio ? ` Warn at ±${meta.portfolio.warnPct}%, critical at ±${meta.portfolio.criticalPct}% of a category's target (minimum tolerance ${meta.portfolio.minTolerancePp} pts).` : '';
+  const rows = p.categories.map(c => [
+    c.name, fmtPct(c.targetPct), c.targetSp === null ? '—' : fmtNum(c.targetSp), fmtNum(c.actualSp), fmtPct(c.actualPct), PORTFOLIO_STATUS_TEXT[c.status],
+  ]);
+  rows.push(['Unassigned', fmtPct(0), '—', fmtNum(p.unassigned.actualSp), fmtPct(p.unassigned.actualPct), PORTFOLIO_STATUS_TEXT[p.unassigned.status]]);
+  return `<h3>Portfolio — ${escapeXml(release.name)}</h3>` +
+    `<p>${escapeXml(basisNote)} ${escapeXml(allocNote)}${escapeXml(warn)}</p>` +
+    table(['Category', 'Target %', 'Target SP', 'Actual SP', 'Actual %', 'Status'], rows) +
+    (p.notes.length ? `<ul>${p.notes.map(n => `<li>${escapeXml(n)}</li>`).join('')}</ul>` : '');
 }
 
 function renderStorage(meta, snapshot) {
@@ -159,6 +230,7 @@ function renderStorage(meta, snapshot) {
         ['Release', `${noun} count`, 'Total capacity', `Threshold capacity (${meta.releaseThresholdPct}%)`, 'Total committed', 'Avg velocity', 'Status'],
         snapshot.releases.map(r => [r.name, fmtNum(r.periodCount), fmtNum(r.totalCapacity), fmtNum(r.thresholdCapacity), fmtNum(r.totalCommitted), fmtNum(r.avgVelocity), STATUS_TEXT[r.status]])
       ));
+    for (const r of snapshot.releases) if (r.portfolio && meta.portfolio) parts.push(renderPortfolio(r, meta));
   }
 
   parts.push(`<h2>${noun}s</h2>`);
@@ -186,5 +258,5 @@ function renderStorage(meta, snapshot) {
 }
 
 module.exports = {
-  SCHEMA, validateSnapshot, parseParentRef, baseTitle, timestampedTitle, renderStorage, buildMachineData, escapeXml,
+  SCHEMA, validateSnapshot, parseParentRef, baseTitle, timestampedTitle, isLogTitle, renderStorage, buildMachineData, escapeXml,
 };

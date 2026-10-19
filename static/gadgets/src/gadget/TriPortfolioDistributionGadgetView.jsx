@@ -87,7 +87,7 @@ export default function TriPortfolioDistributionGadgetView() {
 
   const totalNotes = [];
   if (total?.spacesWithoutAllocation?.length) totalNotes.push(`Target excludes ${total.spacesWithoutAllocation.join(', ')} (no allocation set).`);
-  if (total?.hasAllocation) totalNotes.push('Target is weighted by each space’s capacity for the release.');
+  if (total?.hasAllocation) totalNotes.push('Target is weighted by each space’s threshold capacity for the release.');
   const totalReleaseNames = [...new Set(okResults.map(r => r.releaseName))];
 
   return (

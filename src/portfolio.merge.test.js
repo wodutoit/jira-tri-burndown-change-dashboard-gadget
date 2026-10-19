@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { mergeSpaceDistributions } = require('./portfolio');
 
 const space = (name, cap, alloc, cats, extra = {}) => ({
-  name, totalCapacity: cap, hasAllocation: !!alloc,
+  name, totalCapacity: cap, thresholdCapacity: cap, hasAllocation: !!alloc,
   alloc: alloc?.pct ?? {}, names: alloc?.names ?? {},
   categories: Object.fromEntries(Object.entries(cats).map(([id, [nm, sp]]) => [id, { name: nm, sp }])),
   totalSp: Object.values(cats).reduce((a, [, sp]) => a + sp, 0) + (extra.unassigned || 0),

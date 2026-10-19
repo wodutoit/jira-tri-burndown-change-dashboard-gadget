@@ -143,6 +143,12 @@ If you ever add a new module (another gadget), a new scope, or anything else in 
 forge install --upgrade -e <environment> -s <your-site>.atlassian.net -p jira --confirm-scopes --non-interactive
 ```
 
+The Save to Confluence feature calls Confluence from a Jira module, so the app must be installed on the site's Confluence too:
+
+```bash
+forge install -e <environment> -s <your-site>.atlassian.net -p confluence
+```
+
 Check what's actually live with:
 
 ```bash
@@ -191,6 +197,8 @@ The Capacity tab detects whether the project's board is Scrum or Kanban and show
 Every row (Scrum or Kanban) shows the same four numbers: **Capacity** (inline-editable, defaults to Base Capacity), **Committed** (inline-editable, with a "Get SP Count" button to (re)compute it), and **Velocity** (a "Get Velocity" button works any time, but the number itself is only hand-editable once the sprint/iteration is Closed/Completed).
 
 **How Committed/Velocity are computed:** Capacity uses Jira's own built-in status *category* (To Do / In Progress / Done) rather than the other gadgets' custom Status Mapping — there's no 7-value mapping step to configure. For Scrum, this reuses the exact same `computeScopeFoundation`/`computeVelocity` math as TRI Burndown/Velocity, just fed a category-based mapping instead of a custom one. For Kanban, since there's no sprint field to scope a query by, Committed reconstructs each issue's status as of the iteration's start (+ grace window) from its changelog and checks it against the **Committed Statuses** setting — an explicit whitelist of status names, not the category directly, since a project can have a custom status (e.g. "Team Estimated") that Jira categorizes as To Do but the team treats as already-committed. Until customized, that whitelist defaults to every In Progress-category status (not Done — a ticket that's been sitting in a terminal Done status has nothing to do with a brand-new iteration just because it's never been touched since; check a Done-category status explicitly if your workflow genuinely needs it counted). An issue created after the cutoff is also excluded outright, even if its initial status happens to be one of the whitelisted ones — it didn't exist yet, so it can't have been part of what was committed at the iteration's start; that's mid-iteration scope, the Kanban equivalent of what the Commitment Grace Window already protects against for Scrum. Velocity scans issues (matching the iteration's Label Filter, if set) resolved within the iteration's date range that reached the Done category (unaffected by the Committed Statuses setting). Committed ignores the Label Filter by default — turn on **Apply Label Filter to Committed** in settings if it should scope Committed too.
+
+**Save to Confluence (per space, opt-in).** Settings: Project settings → Capacity Planning → *Save to Confluence* (enable, Confluence space key, optional parent page/folder URL or ID). The target is validated against Confluence by `setConfluenceExportSettings` and stored in `capacity-settings:${projectKey}`; `setCapacitySettings` never accepts those fields from the client. `SaveToConfluenceButton.jsx` sends the on-screen snapshot (`capacitySnapshot.js`) to `saveCapacityToConfluence`, which re-validates and renders it (`src/confluenceExport.js`) and writes via the Confluence v2 REST API as the user (`asUser().requestConfluence`). It needs these scopes — `read:space:confluence`, `read:page:confluence`, `write:page:confluence`, `read:folder:confluence` — and the app **installed on Confluence as well as Jira** (`forge install -e <env> -s <site> -p confluence`, then `forge install --upgrade` for both products). See `.claude/PROJECT-CONTEXT.md` for the design decisions.
 
 **"Only one Active iteration" is enforced by blocking, not by auto-changing another row.** With "Allow multiple active iterations" off, trying to activate a second iteration while one is already Active shows an error naming the conflicting iteration — you decide what happens to it.
 

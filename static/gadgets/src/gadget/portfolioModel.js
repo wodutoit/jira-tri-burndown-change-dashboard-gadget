@@ -26,17 +26,20 @@ export function buildPortfolioRows({ options = [], optionsLoaded = false, alloca
   const hasActuals = !!actuals && totalSp > 0;
   const optionById = new Map(options.map(o => [o.id, o]));
 
-  // Committed basis: a category's target is its % of the release's Total
-  // Capacity (e.g. 20% of 360 = 72 SP) and is judged on committed SP against
-  // that — so Capacity directly drives the colours. Percent labels still show
-  // each category's share of Total Committed. The live ('current') basis and a
-  // release with no capacity keep the old share-of-total comparison.
+  // Committed basis: a category's target is its % of the release's THRESHOLD
+  // Capacity (Total Capacity × the release threshold %, the same figure the
+  // Capacity table's Threshold Capacity column shows — e.g. 20% of 238 = 47.6 SP)
+  // and is judged on committed SP against that, so the planned-work budget
+  // directly drives the colours. Percent labels still show each category's share
+  // of Total Committed. The live ('current') basis and a release with no
+  // capacity keep the old share-of-total comparison.
   const totalCapacity = actuals?.totalCapacity ?? 0;
-  const capacityBased = actuals?.basis === 'committed' && totalCapacity > 0;
-  const targetSpOf = (target) => (capacityBased ? Math.round((target / 100) * totalCapacity * 10) / 10 : null);
+  const thresholdCapacity = actuals?.thresholdCapacity ?? 0;
+  const capacityBased = actuals?.basis === 'committed' && thresholdCapacity > 0;
+  const targetSpOf = (target) => (capacityBased ? Math.round((target / 100) * thresholdCapacity * 10) / 10 : null);
 
   const classify = (actualPct, target) => classifyPortfolioShare(actualPct, target, thresholds.warnPct, thresholds.criticalPct, thresholds.minTolerancePp);
-  const judgedPct = (actualSp, actualPct) => (capacityBased ? (actualSp / totalCapacity) * 100 : actualPct);
+  const judgedPct = (actualSp, actualPct) => (capacityBased ? (actualSp / thresholdCapacity) * 100 : actualPct);
   // With no allocation at all there's no target to measure a category against,
   // so it isn't judged (rather than every category reading as "off target").
   // Unassigned is the exception: its target is always 0, allocation or not.
@@ -83,7 +86,7 @@ export function buildPortfolioRows({ options = [], optionsLoaded = false, alloca
     },
     allocatedTotal,
     unallocatedPct: Math.max(0, Math.round((100 - allocatedTotal) * 10) / 10),
-    hasSaved, hasActuals, totalSp, totalCapacity, capacityBased,
+    hasSaved, hasActuals, totalSp, totalCapacity, thresholdCapacity, capacityBased,
     basis: actuals?.basis ?? 'current',
     // Sprints with committed SP but no saved category split (shown as Unassigned).
     sprintsMissingSplit: actuals?.sprintsMissingSplit ?? 0,

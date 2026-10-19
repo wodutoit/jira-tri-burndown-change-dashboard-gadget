@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateSnapshot, parseParentRef, baseTitle, timestampedTitle, renderStorage } = require('./confluenceExport');
+const { validateSnapshot, parseParentRef, baseTitle, timestampedTitle, isLogTitle, renderStorage } = require('./confluenceExport');
 
 const meta = {
   projectKey: 'ZEN', projectName: 'ZENITH', boardType: 'scrum', baseCapacitySp: 20,
@@ -18,6 +18,17 @@ test('parseParentRef handles ids, page URLs and folder URLs', () => {
 test('titles', () => {
   assert.equal(baseTitle('ZENITH'), 'ZENITH-Capacity Log');
   assert.equal(timestampedTitle('ZENITH', new Date('2026-10-19T14:32:05Z')), 'ZENITH-Capacity Log 2026-10-19 14:32 UTC');
+});
+
+test('isLogTitle matches only the base and timestamped titles', () => {
+  assert.ok(isLogTitle('ZENITH-Capacity Log', 'ZENITH'));
+  assert.ok(isLogTitle('ZENITH-Capacity Log 2026-10-19 14:32 UTC', 'ZENITH'));
+  assert.ok(!isLogTitle('ZENITH-Capacity Log Notes', 'ZENITH'));
+  assert.ok(!isLogTitle('Other-Capacity Log', 'ZENITH'));
+  assert.ok(!isLogTitle('ZENITH-Capacity Log 2026-10-19', 'ZENITH'));
+  // regex metacharacters in a project name are literal
+  assert.ok(isLogTitle('A.B (x)-Capacity Log', 'A.B (x)'));
+  assert.ok(!isLogTitle('AxB (x)-Capacity Log', 'A.B (x)'));
 });
 
 test('validateSnapshot rebuilds fields and drops junk', () => {
@@ -61,4 +72,31 @@ test('renderStorage omits Releases section when release mapping is off', () => {
   const { snapshot } = validateSnapshot({ periods: [], releases: [] });
   const xml = renderStorage({ ...meta, releaseMappingEnabled: false }, snapshot);
   assert.ok(!xml.includes('<h2>Releases</h2>'));
+});
+
+test('portfolio sub-table renders per release when enabled, and is dropped when the server says it is off', () => {
+  const { snapshot } = validateSnapshot({
+    periods: [],
+    releases: [{
+      id: 'r1', name: 'Rel <1>', status: 'within_threshold',
+      portfolio: {
+        basis: 'committed', hasAllocation: true, isDefaultAllocation: true, totalCommitted: 40, totalCapacity: 100,
+        categories: [{ id: 'a', name: 'Features & more', targetPct: 60, targetSp: 60, actualSp: 30, actualPct: 75, status: 'warn' }, { id: 'b', name: 'X', status: 'bogus' }],
+        unassigned: { actualSp: 5, actualPct: 12.5, status: 'critical' },
+        notes: ['2 tickets have no estimate'],
+      },
+    }],
+  });
+  assert.equal(snapshot.releases[0].portfolio.categories[1].status, 'none');
+  const on = renderStorage({ ...meta, portfolio: { warnPct: 10, criticalPct: 20, minTolerancePp: 1 } }, snapshot);
+  assert.ok(on.includes('<h3>Portfolio — Rel &lt;1&gt;</h3>'));
+  assert.ok(on.includes('Features &amp; more'));
+  assert.ok(on.includes('Outside warn threshold'));
+  assert.ok(on.includes('Unassigned'));
+  assert.ok(on.includes('space default allocation'));
+  const data = JSON.parse(on.match(/<!\[CDATA\[([\s\S]*)\]\]>/)[1]);
+  assert.equal(data.releases[0].portfolio.unassigned.status, 'critical');
+  assert.equal(data.settings.portfolio.warnPct, 10);
+  const off = renderStorage({ ...meta, portfolio: null }, snapshot);
+  assert.ok(!off.includes('<h3>Portfolio'));
 });

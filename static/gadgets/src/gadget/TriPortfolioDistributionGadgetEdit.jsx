@@ -149,7 +149,7 @@ export default function TriPortfolioDistributionGadgetEdit() {
               {SHOW_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
             <div style={S.hint}>
-              The Total merges categories across spaces by name and weights each space's target by its capacity for
+              The Total merges categories across spaces by name and weights each space's target by its threshold capacity for
               the release. It only appears when more than one space has data.
             </div>
           </Section>
@@ -229,7 +229,7 @@ export default function TriPortfolioDistributionGadgetEdit() {
 
       <Section title="Measure by">
         <select value={basis} onChange={e => setBasis(e.target.value)} style={S.select}>
-          <option value="committed">Total Committed (matches the Capacity page; target = % of Total Capacity)</option>
+          <option value="committed">Total Committed (matches the Capacity page; target = % of Threshold Capacity)</option>
           <option value="current">Current sprint contents (live scan of the tickets in the release's sprints)</option>
         </select>
         <div style={S.hint}>The starting choice — viewers can switch on the gadget itself.</div>

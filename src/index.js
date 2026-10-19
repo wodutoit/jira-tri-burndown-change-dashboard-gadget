@@ -2,8 +2,8 @@ const Resolver = require('@forge/resolver').default;
 const { route, asUser } = require('@forge/api');
 const { kvs } = require('@forge/kvs');
 const crypto = require('crypto');
-const { validateSnapshot, parseParentRef, baseTitle, timestampedTitle, renderStorage } = require('./confluenceExport');
-const { validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, summarizeNoEstimate, countNoEstimate, mergeSpaceDistributions, resolveEffectiveAllocation } = require('./portfolio');
+const { validateSnapshot, parseParentRef, baseTitle, timestampedTitle, isLogTitle, renderStorage } = require('./confluenceExport');
+const { rollupForVersion, validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, summarizeNoEstimate, countNoEstimate, mergeSpaceDistributions, resolveEffectiveAllocation } = require('./portfolio');
 
 const resolver = new Resolver();
 
@@ -1219,7 +1219,9 @@ resolver.define('getVelocityData', async ({ payload }) => {
   const { spaces } = payload ?? {};
   if (!Array.isArray(spaces) || spaces.length === 0) return { spaces: [], error: 'No spaces configured.' };
 
-  const numOr = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+  // null/''/undefined mean "not set" (a cleared capacity override is stored as
+  // null) — Number(null) is 0, so they must be excluded before the finite check.
+  const numOr = (v, fallback) => (v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : fallback);
 
   const results = [];
   for (const space of spaces) {
@@ -1555,6 +1557,22 @@ function confluencePageUrl(json) {
   return base && webui ? `${base}${webui}` : null;
 }
 
+// Looks a parent up as a page, then as a folder. Returns { parent } or
+// { error, notFound?, gone? } — `gone` covers a parent that still resolves but
+// is trashed/archived/draft, which can't be used as a parent.
+async function lookupConfluenceParent(id) {
+  let found = await confluenceGet(route`/wiki/api/v2/pages/${id}`, 'Looking up the parent page');
+  let type = 'page';
+  if (found.error && found.status === 404) {
+    found = await confluenceGet(route`/wiki/api/v2/folders/${id}`, 'Looking up the parent folder');
+    type = 'folder';
+  }
+  if (found.error) return { error: found.error, notFound: found.status === 404 };
+  const status = found.json?.status;
+  if (status && status !== 'current') return { error: `The parent ${type} is ${status}.`, gone: true };
+  return { parent: { id: String(found.json.id), type, title: String(found.json.title || ''), spaceId: String(found.json.spaceId) } };
+}
+
 resolver.define('setConfluenceExportSettings', async ({ payload }) => {
   const { projectKey, enabled, spaceKey, parentRef } = payload ?? {};
   if (!projectKey) return { error: 'Missing project key.' };
@@ -1575,17 +1593,12 @@ resolver.define('setConfluenceExportSettings', async ({ payload }) => {
       if (typeof parentRef === 'string' && parentRef.trim()) {
         const id = parseParentRef(parentRef);
         if (!id) return { error: 'Parent must be a Confluence page/folder URL or numeric ID (leave blank for the space root).' };
-        let found = await confluenceGet(route`/wiki/api/v2/pages/${id}`, 'Looking up the parent page');
-        let type = 'page';
-        if (found.error && found.status === 404) {
-          found = await confluenceGet(route`/wiki/api/v2/folders/${id}`, 'Looking up the parent folder');
-          type = 'folder';
-        }
+        const found = await lookupConfluenceParent(id);
         if (found.error) return { error: found.error };
-        if (String(found.json.spaceId) !== String(space.id)) {
-          return { error: `That ${type} isn't in the "${key}" space.` };
+        if (found.parent.spaceId !== String(space.id)) {
+          return { error: `That ${found.parent.type} isn't in the "${key}" space.` };
         }
-        parent = { id: String(found.json.id), type, title: String(found.json.title || '') };
+        parent = { id: found.parent.id, type: found.parent.type, title: found.parent.title };
       }
       Object.assign(next, {
         confluenceExportEnabled: true,
@@ -1603,6 +1616,48 @@ resolver.define('setConfluenceExportSettings', async ({ payload }) => {
     return { error: e.message };
   }
 });
+
+// The page "Save to Confluence" should offer to overwrite: the most recent log
+// page for this space — either "<name>-Capacity Log" or a timestamped copy.
+//  1. the page this app last wrote (remembered in kvs), if it still exists as a
+//     current page in the configured space;
+//  2. otherwise the newest page in the space whose title is a log title (covers
+//     pages created before the app remembered anything);
+//  3. otherwise the exact base-title page.
+// Returns { page: { id, title, url } | null } or { error }.
+async function findLatestLogPage({ projectKey, spaceId, projectName }) {
+  const lastKey = `confluence-last-page:${projectKey}`;
+  let stored = null;
+  try { stored = await kvs.get(lastKey); } catch (_) {}
+  if (stored?.id) {
+    const cur = await confluenceGet(route`/wiki/api/v2/pages/${stored.id}`, 'Reading the last saved page');
+    if (!cur.error && cur.json?.status === 'current' && String(cur.json.spaceId) === String(spaceId)) {
+      return { page: { id: String(cur.json.id), title: cur.json.title, url: confluencePageUrl(cur.json) } };
+    }
+  }
+
+  const recent = await confluenceGet(
+    route`/wiki/api/v2/pages?space-id=${spaceId}&status=current&sort=-created-date&limit=100`,
+    'Checking for an existing Capacity Log page'
+  );
+  if (recent.error) return { error: recent.error };
+  const hit = (recent.json?.results ?? []).find(p => isLogTitle(p.title, projectName));
+  if (hit) {
+    const base = recent.json?._links?.base;
+    return { page: { id: String(hit.id), title: hit.title, url: base && hit._links?.webui ? `${base}${hit._links.webui}` : null } };
+  }
+
+  const title = baseTitle(projectName);
+  const exact = await confluenceGet(
+    route`/wiki/api/v2/pages?space-id=${spaceId}&title=${title}&status=current&limit=1`,
+    'Checking for an existing Capacity Log page'
+  );
+  if (exact.error) return { error: exact.error };
+  const e = exact.json?.results?.[0];
+  if (!e) return { page: null };
+  const base = exact.json?._links?.base;
+  return { page: { id: String(e.id), title: e.title, url: base && e._links?.webui ? `${base}${e._links.webui}` : null } };
+}
 
 resolver.define('saveCapacityToConfluence', async ({ payload }) => {
   const { projectKey, snapshot: rawSnapshot, mode } = payload ?? {};
@@ -1623,21 +1678,25 @@ resolver.define('saveCapacityToConfluence', async ({ payload }) => {
       baseCapacitySp: settings.baseCapacitySp,
       releaseMappingEnabled: !!settings.releaseMappingEnabled,
       releaseThresholdPct: settings.releaseThresholdPct,
+      // Only when Portfolio Planning is actually on for this space (Scrum + Release Mapping).
+      portfolio: (settings.portfolioPlanningEnabled && settings.releaseMappingEnabled && snapshot.periodType === 'sprint')
+        ? { warnPct: settings.portfolioWarnPct, criticalPct: settings.portfolioCriticalPct, minTolerancePp: settings.portfolioMinTolerancePp }
+        : null,
       generatedAt,
     }, snapshot);
 
     const spaceId = settings.confluenceSpaceId;
     const title = baseTitle(projectName);
-    const found = await confluenceGet(
-      route`/wiki/api/v2/pages?space-id=${spaceId}&title=${title}&status=current&limit=1`,
-      'Checking for an existing Capacity Log page'
-    );
-    if (found.error) return { error: found.error };
-    const existing = found.json?.results?.[0] ?? null;
+    const latest = await findLatestLogPage({ projectKey, spaceId, projectName });
+    if (latest.error) return { error: latest.error };
+    const existing = latest.page;
+    const remember = async (page) => {
+      try { await kvs.set(`confluence-last-page:${projectKey}`, { id: page.id, title: page.title, spaceId: String(spaceId) }); } catch (_) {}
+    };
     const writeMode = mode === 'overwrite' || mode === 'new' ? mode : 'check';
 
     if (existing && writeMode === 'check') {
-      return { status: 'exists', page: { id: String(existing.id), title: existing.title, url: confluencePageUrl(existing) } };
+      return { status: 'exists', page: existing };
     }
 
     if (existing && writeMode === 'overwrite') {
@@ -1647,7 +1706,7 @@ resolver.define('saveCapacityToConfluence', async ({ payload }) => {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
-          id: String(existing.id), status: 'current', title,
+          id: String(existing.id), status: 'current', title: existing.title,
           body: { representation: 'storage', value: body },
           version: { number: (cur.json?.version?.number ?? 1) + 1, message: 'Capacity snapshot (TRI Sprint Dashboard Gadgets)' },
         }),
@@ -1658,10 +1717,27 @@ resolver.define('saveCapacityToConfluence', async ({ payload }) => {
           : confluenceHttpError(res.status, 'Updating the page') };
       }
       const out = await res.json();
-      return { status: 'updated', page: { id: String(out.id), title, url: confluencePageUrl(out) } };
+      const page = { id: String(out.id), title: existing.title, url: confluencePageUrl(out) || existing.url };
+      await remember(page);
+      return { status: 'updated', page };
     }
 
     // Create: no page yet, or the user asked for a new (timestamped) page.
+    // The parent was validated when the settings were saved, but it can have been
+    // deleted, archived or moved to another space since — check again and say so
+    // plainly instead of surfacing Confluence's generic error.
+    if (settings.confluenceParentId) {
+      const label = `${settings.confluenceParentType || 'page'} "${settings.confluenceParentTitle || settings.confluenceParentId}"`;
+      const fix = 'Choose a new parent (or clear it to save at the top of the space) under Project settings → Capacity Planning → Save to Confluence.';
+      const chk = await lookupConfluenceParent(settings.confluenceParentId);
+      if (chk.notFound || chk.gone) {
+        return { error: `The parent ${label} configured for this space no longer exists in Confluence (it was deleted or archived). ${fix}` };
+      }
+      if (chk.error) return { error: chk.error };
+      if (chk.parent.spaceId !== String(spaceId)) {
+        return { error: `The parent ${label} configured for this space has moved to a different Confluence space. ${fix}` };
+      }
+    }
     const newTitle = existing ? timestampedTitle(projectName) : title;
     const createBody = {
       spaceId, status: 'current', title: newTitle,
@@ -1679,7 +1755,9 @@ resolver.define('saveCapacityToConfluence', async ({ payload }) => {
         : confluenceHttpError(res.status, 'Creating the page') };
     }
     const out = await res.json();
-    return { status: 'created', page: { id: String(out.id), title: newTitle, url: confluencePageUrl(out) } };
+    const page = { id: String(out.id), title: newTitle, url: confluencePageUrl(out) };
+    await remember(page);
+    return { status: 'created', page };
   } catch (e) {
     return { error: e.message };
   }
@@ -2054,7 +2132,10 @@ resolver.define('getPortfolioActuals', async ({ payload }) => {
       const group = byRelease.get(releaseId) ?? [];
       return [releaseId, {
         ...(await actualsForBasis(basis, projectKey, settings, releaseId, group, forceRefresh)),
-        totalCapacity: rollupForVersion(group.map(s => ({ ...s, releaseId })), { id: releaseId }, settings).totalCapacity,
+        ...(() => {
+          const r = rollupForVersion(group.map(s => ({ ...s, releaseId })), { id: releaseId }, settings);
+          return { totalCapacity: r.totalCapacity, thresholdCapacity: r.thresholdSp };
+        })(),
       }];
     }));
 
@@ -2075,7 +2156,10 @@ async function buildSpaceDistribution({ projectKey, name, settings, sprints, ver
   return {
     projectKey, name,
     releaseId: version.id, releaseName: version.name, releaseDate: version.releaseDate, released: version.released,
-    totalCapacity: rollupForVersion(sprints, version, settings).totalCapacity,
+    ...(() => {
+      const r = rollupForVersion(sprints, version, settings);
+      return { totalCapacity: r.totalCapacity, thresholdCapacity: r.thresholdSp };
+    })(),
     hasAllocation: !!stored, usesDefault: source === 'default',
     alloc: stored?.alloc ?? {}, names: stored?.names ?? {},
     totalSp: actuals.totalSp, categories: actuals.categories, unassigned: actuals.unassigned,
@@ -2218,20 +2302,6 @@ async function fetchReleaseMappedRows(projectKey) {
   ]);
   const overrides = await getCapacityRows(projectKey);
   return { rows: [...active, ...future, ...closed].map(s => ({ id: s.id, ...(overrides[s.id] || {}) })) };
-}
-
-// Pure sum — no I/O — so it's cheap to call once per release in a roadmap
-// against the same already-fetched row set.
-function rollupForVersion(rows, targetVersion, settings) {
-  const numOr = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
-  const mapped = rows.filter(r => r.releaseId === targetVersion.id);
-  const totalCapacity = mapped.reduce((a, r) => a + numOr(r.capacitySp, settings.baseCapacitySp), 0);
-  const totalCommitted = mapped.reduce((a, r) => a + numOr(r.committedSp, 0), 0);
-  const thresholdSp = totalCapacity * (settings.releaseThresholdPct / 100);
-  // Committed tickets with no estimate (Scrum rows that have been counted since
-  // this was added; Kanban iterations and older rows simply report 0).
-  const unestimatedCount = countNoEstimate(mapped);
-  return { totalCapacity, totalCommitted, thresholdSp, thresholdPct: settings.releaseThresholdPct, unestimatedCount };
 }
 
 // Names for the Release dropdown: every unreleased release, always, plus only

@@ -50,12 +50,17 @@ export default function SaveToConfluenceButton({ projectKey, getSnapshot }) {
       {existing && (
         <div onClick={() => !busy && setExisting(null)} style={S.dialogOverlay}>
           <div onClick={e => e.stopPropagation()} style={S.dialogBox}>
-            <div style={S.dialogTitle}>Capacity Log page already exists</div>
+            <div style={S.dialogTitle}>{existing.title.includes(' UTC') ? 'A saved Capacity Log page exists' : 'Capacity Log page already exists'}</div>
             <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.5 }}>
               {existing.url
                 ? <a href={existing.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--brand)', fontWeight: 600 }}>{existing.title}</a>
                 : <strong>{existing.title}</strong>}{' '}
-              is already in Confluence. Overwrite it with this snapshot, or keep it and create a new, timestamped page?
+              is the most recent Capacity Log page. Overwrite it with this snapshot, or keep it and create a new, timestamped page?
+            </div>
+            <div style={{ ...S.error, marginTop: 12, color: 'var(--text)' }}>
+              <strong>Overwrite replaces the whole page</strong>, including any edits made to it in Confluence. The
+              previous version stays available in the page's history, but it won't be on the page any more. Choose
+              <strong> New page</strong> to keep the existing one untouched.
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 22 }}>
               <button onClick={() => setExisting(null)} disabled={busy} style={{ ...S.btn, background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-subtle)' }}>Cancel</button>

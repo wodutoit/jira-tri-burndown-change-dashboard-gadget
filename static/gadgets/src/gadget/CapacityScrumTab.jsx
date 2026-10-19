@@ -145,6 +145,15 @@ export default function CapacityScrumTab({
               getSnapshot={() => buildCapacitySnapshot({
                 periodType: 'sprint', hideClosed, visibleRows, allRows: rows, releaseOptions,
                 baseCapacitySp, releaseMappingEnabled, thresholdPct: releaseThresholdPct,
+                portfolio: portfolioOn ? {
+                  thresholds: portfolioThresholds,
+                  allocations: portfolio.allocations,
+                  defaultAllocation: portfolio.defaultAllocation,
+                  actuals: portfolio.actuals,
+                  options: portfolio.options,
+                  optionsLoaded: portfolio.optionsLoaded,
+                  actualsLoading: portfolio.actualsLoading,
+                } : null,
               })}
             />
           </div>
@@ -161,6 +170,7 @@ export default function CapacityScrumTab({
           portfolio={portfolioOn ? {
             thresholds: portfolioThresholds,
             allocations: portfolio.allocations,
+            defaultAllocation: portfolio.defaultAllocation,
             actuals: portfolio.actuals,
             options: portfolio.options,
             optionsLoaded: portfolio.optionsLoaded,

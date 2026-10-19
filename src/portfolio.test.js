@@ -197,3 +197,20 @@ test('countNoEstimate counts a carried-over ticket once, and keeps overflow beyo
   assert.equal(countNoEstimate([{ committedNoEstimate: big }]), 60);
   assert.equal(countNoEstimate([]), 0);
 });
+
+test('rollupForVersion: a sprint without a capacity override counts the base capacity, not 0', () => {
+  const { rollupForVersion } = require('./portfolio');
+  const settings = { baseCapacitySp: 90, releaseThresholdPct: 70 };
+  const rows = [
+    { releaseId: 'r', capacitySp: 78, committedSp: 10 },
+    { releaseId: 'r', capacitySp: null, committedSp: 5 },       // no override -> base (90)
+    { releaseId: 'r', committedSp: null },                        // key absent -> base (90)
+    { releaseId: 'r', capacitySp: '', committedSp: 0 },           // cleared input -> base (90)
+    { releaseId: 'r', capacitySp: 0, committedSp: 0 },            // explicit 0 stays 0
+    { releaseId: 'other', capacitySp: 500, committedSp: 500 },   // other release ignored
+  ];
+  const out = rollupForVersion(rows, { id: 'r' }, settings);
+  assert.equal(out.totalCapacity, 78 + 90 + 90 + 90 + 0);
+  assert.equal(out.totalCommitted, 15);
+  assert.equal(out.thresholdSp, (78 + 90 + 90 + 90) * 0.7);
+});

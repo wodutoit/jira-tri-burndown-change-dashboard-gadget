@@ -35,7 +35,7 @@ export function modelFor(data) {
     actuals: {
       totalSp: data.totalSp, categories: data.categories, unassigned: data.unassigned,
       unestimatedCount: data.unestimatedCount, sprintCount: data.sprintCount,
-      totalCapacity: data.totalCapacity, basis: data.basis,
+      totalCapacity: data.totalCapacity, thresholdCapacity: data.thresholdCapacity, basis: data.basis,
       sprintsMissingSplit: data.sprintsMissingSplit, sprintsNotCounted: data.sprintsNotCounted,
     },
     thresholds: data.thresholds,
@@ -108,10 +108,10 @@ function Donut({ model, colorFor }) {
 // so how far out of range a category is reads without doing arithmetic. Worst
 // first; Unassigned last.
 function Bullets({ model, thresholds }) {
-  const { rows, unassigned, hasActuals, hasSaved, totalSp, totalCapacity, capacityBased } = model;
-  // On the committed basis a bar is committed SP as a % of Total Capacity (what
+  const { rows, unassigned, hasActuals, hasSaved, totalSp, thresholdCapacity, capacityBased } = model;
+  // On the committed basis a bar is committed SP as a % of Threshold Capacity (what
   // the status is judged on); otherwise it's the category's share of the total.
-  const shown = (r) => (capacityBased ? (r.actualSp / totalCapacity) * 100 : (r.actualPct ?? 0));
+  const shown = (r) => (capacityBased ? (r.actualSp / thresholdCapacity) * 100 : (r.actualPct ?? 0));
   const list = rows
     .filter(r => r.target > 0 || r.actualSp > 0)
     .sort((a, b) => (STATUS_RANK[a.status] - STATUS_RANK[b.status])
@@ -225,7 +225,7 @@ export default function PortfolioChart({ title, subtitle, badge, data, chartStyl
       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 2 }}>
         {!model.hasSaved && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>No portfolio allocation set for this release — showing actuals only.</span>}
         {model.hasSaved && data.usesDefault && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>Target is the space's default distribution.</span>}
-        {model.capacityBased && model.hasSaved && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>Target SP = target % of Total Capacity ({model.totalCapacity} SP); actual = Total Committed ({model.totalSp} SP).</span>}
+        {model.capacityBased && model.hasSaved && <span style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>Target SP = target % of Threshold Capacity ({Math.round(model.thresholdCapacity * 10) / 10} SP); actual = Total Committed ({model.totalSp} SP).</span>}
         {portfolioNotes(model).filter(n => n !== noEstimateNote(model)).map((n, i) => <span key={`n${i}`} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>)}
         {notes.map((n, i) => <span key={i} style={{ fontSize: 10, color: 'var(--text-subtlest)' }}>{n}</span>)}
       </div>

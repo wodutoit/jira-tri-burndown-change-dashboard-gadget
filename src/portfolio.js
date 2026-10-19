@@ -230,7 +230,7 @@ function aggregateCommittedSplits(rows, fieldId) {
 
 // ── Cross-space Total (gadget) ───────────────────────────────────────────────
 // One space's distribution for one release has this shape (built in index.js):
-//   { name, totalCapacity, hasAllocation, alloc:{id:pct}, names:{id:name},
+//   { name, totalCapacity, thresholdCapacity, hasAllocation, alloc:{id:pct}, names:{id:name},
 //     totalSp, categories:{id:{name,sp}}, unassigned:{sp}, unestimatedCount,
 //     sprintCount, thresholds:{warnPct,criticalPct,minTolerancePp} }
 // Option ids differ per space (each has its own field), so spaces are merged by
@@ -238,7 +238,7 @@ function aggregateCommittedSplits(rows, fieldId) {
 // shape with synthetic "n:<name>" ids, so it renders through the same code.
 //
 //  - Actual SP: summed per category (and Unassigned) across spaces.
-//  - Target %: weighted by each space's capacity for the release (the plan, not
+//  - Target %: weighted by each space's threshold capacity for the release (the plan, not
 //    the actual mix of work), over only the spaces that HAVE an allocation for
 //    it; a space without one is left out of the weights and listed in
 //    `spacesWithoutAllocation`. If no included space has capacity, equal weights.
@@ -270,8 +270,8 @@ function mergeSpaceDistributions(items) {
   }
 
   const withAlloc = list.filter(d => d.hasAllocation);
-  const capSum = withAlloc.reduce((a, d) => a + Math.max(0, d.totalCapacity || 0), 0);
-  const weightOf = (d) => (capSum > 0 ? Math.max(0, d.totalCapacity || 0) : 1);
+  const capSum = withAlloc.reduce((a, d) => a + Math.max(0, d.thresholdCapacity || 0), 0);
+  const weightOf = (d) => (capSum > 0 ? Math.max(0, d.thresholdCapacity || 0) : 1);
   const weightSum = withAlloc.reduce((a, d) => a + weightOf(d), 0);
 
   for (const d of withAlloc) {
@@ -293,6 +293,7 @@ function mergeSpaceDistributions(items) {
   return {
     name: 'Total',
     totalCapacity: withAlloc.reduce((a, d) => a + (d.totalCapacity || 0), 0),
+    thresholdCapacity: withAlloc.reduce((a, d) => a + (d.thresholdCapacity || 0), 0),
     hasAllocation: withAlloc.length > 0,
     alloc, names: outNames, categories,
     totalSp: round1(totalSp), unassigned: { sp: round1(unassignedSp) },
@@ -317,4 +318,24 @@ function resolveEffectiveAllocation(bucket, releaseId) {
   return { allocation: null, source: 'none' };
 }
 
-module.exports = { validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, summarizeNoEstimate, countNoEstimate, mergeSpaceDistributions, resolveEffectiveAllocation, round1, MAX_OPTIONS, DEFAULT_UNESTIMATED_SP };
+// Capacity/Committed rollup of the rows mapped to one release (pure, no I/O).
+// A row's capacity is its per-row override when it has one, otherwise the
+// space's Base Capacity — same rule as the Capacity table (`capacitySp ??
+// baseCapacitySp`). An absent override is null/undefined/'' and must NOT be run
+// through Number(): Number(null) and Number('') are 0, which is "finite" and
+// used to make every sprint without an override count as 0 capacity here
+// (understating the portfolio targets and the Release Capacity gadgets).
+function rollupForVersion(rows, targetVersion, settings) {
+  const isSet = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+  const numOr = (v, fallback) => (isSet(v) ? Number(v) : fallback);
+  const mapped = rows.filter(r => r.releaseId === targetVersion.id);
+  const totalCapacity = mapped.reduce((a, r) => a + numOr(r.capacitySp, numOr(settings.baseCapacitySp, 0)), 0);
+  const totalCommitted = mapped.reduce((a, r) => a + numOr(r.committedSp, 0), 0);
+  const thresholdSp = totalCapacity * (settings.releaseThresholdPct / 100);
+  // Committed tickets with no estimate (Scrum rows that have been counted since
+  // this was added; Kanban iterations and older rows simply report 0).
+  const unestimatedCount = countNoEstimate(mapped);
+  return { totalCapacity, totalCommitted, thresholdSp, thresholdPct: settings.releaseThresholdPct, unestimatedCount };
+}
+
+module.exports = { rollupForVersion, validateAllocation, aggregateActuals, buildCommittedSplit, aggregateCommittedSplits, summarizeNoEstimate, countNoEstimate, mergeSpaceDistributions, resolveEffectiveAllocation, round1, MAX_OPTIONS, DEFAULT_UNESTIMATED_SP };

@@ -1,4 +1,5 @@
 import { classifyReleaseStatus } from './gadgetUtils';
+import { buildPortfolioRows, portfolioNotes } from './portfolioModel';
 
 const TIER_TO_STATUS = {
   none: 'no_capacity',
@@ -39,15 +40,51 @@ export function summarizeReleases({ rows, allRows = rows, releaseOptions, baseCa
   });
 }
 
+// One release's Portfolio Planning breakdown, built with the same model the
+// allocation bar/popup use (buildPortfolioRows) so the export matches the screen.
+// A release's own allocation wins, otherwise the space default.
+function portfolioForRelease(releaseId, portfolio, releaseOptions) {
+  const own = portfolio.allocations?.[releaseId] ?? null;
+  const allocation = own ?? portfolio.defaultAllocation ?? null;
+  const model = buildPortfolioRows({
+    options: portfolio.options,
+    optionsLoaded: portfolio.optionsLoaded,
+    allocation,
+    isDefault: !own,
+    actuals: portfolio.actuals?.[releaseId] ?? null,
+    historical: !!(releaseOptions || []).find(v => v.id === releaseId)?.released,
+    thresholds: portfolio.thresholds,
+  });
+  return {
+    basis: model.basis,
+    hasAllocation: model.hasSaved,
+    isDefaultAllocation: model.isDefault,
+    totalCommitted: model.totalSp,
+    totalCapacity: model.totalCapacity,
+    thresholdCapacity: model.thresholdCapacity,
+    categories: model.rows
+      .filter(r => !(r.removed && r.target === 0 && r.actualSp === 0))
+      .map(r => ({
+        id: r.id, name: r.name, targetPct: r.target, targetSp: r.targetSp,
+        actualSp: r.actualSp, actualPct: r.actualPct, status: r.status,
+      })),
+    unassigned: { actualSp: model.unassigned.actualSp, actualPct: model.unassigned.actualPct, status: model.unassigned.status },
+    notes: portfolioNotes(model),
+  };
+}
+
 // What "Save to Confluence" sends: exactly what's on screen (visible rows +
 // the release rollup). The server re-validates and re-renders everything.
-export function buildCapacitySnapshot({ periodType, hideClosed, visibleRows, allRows, releaseOptions, baseCapacitySp, releaseMappingEnabled, thresholdPct }) {
+// `portfolio` (Scrum + Portfolio Planning on only) is the usePortfolio state plus thresholds.
+export function buildCapacitySnapshot({ periodType, hideClosed, visibleRows, allRows, releaseOptions, baseCapacitySp, releaseMappingEnabled, thresholdPct, portfolio = null }) {
+  if (portfolio && portfolio.actualsLoading) throw new Error('Portfolio data is still loading — try again in a moment.');
   const nameOf = id => ((releaseOptions || []).find(v => v.id === id) || {}).name || (id ? '(deleted release)' : null);
   const releases = releaseMappingEnabled
     ? summarizeReleases({ rows: visibleRows, allRows, releaseOptions, baseCapacitySp, thresholdPct }).map(s => ({
       id: s.releaseId, name: s.name, periodCount: s.sprintCount,
       totalCapacity: s.totalCapacity, thresholdCapacity: s.thresholdCapacity, totalCommitted: s.totalCommitted,
       avgVelocity: s.avgVelocity, status: TIER_TO_STATUS[s.tier],
+      ...(portfolio ? { portfolio: portfolioForRelease(s.releaseId, portfolio, releaseOptions) } : {}),
     }))
     : [];
   const periods = visibleRows.map(r => ({

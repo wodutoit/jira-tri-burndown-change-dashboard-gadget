@@ -68,7 +68,7 @@ export default function PortfolioDialog({
         <div style={{ ...S.hint, marginTop: 12 }}>
           {model.basis === 'committed'
             ? (hasActuals
-                ? <>Actual = this release's Total Committed ({totalSp} SP across {sprintCount} sprint{sprintCount === 1 ? '' : 's'}), split by category when each sprint's SP Count was taken.{model.totalCapacity > 0 ? <> Target SP = target % of Total Capacity ({model.totalCapacity} SP).</> : null}</>
+                ? <>Actual = this release's Total Committed ({totalSp} SP across {sprintCount} sprint{sprintCount === 1 ? '' : 's'}), split by category when each sprint's SP Count was taken.{model.thresholdCapacity > 0 ? <> Target SP = target % of Threshold Capacity ({Math.round(model.thresholdCapacity * 10) / 10} SP).</> : null}</>
                 : <>Actual shares appear once the release's sprints have a Committed SP count.</>)
             : (hasActuals
                 ? <>Actual = current story points of every ticket in the {sprintCount} sprint{sprintCount === 1 ? '' : 's'} mapped to this release ({totalSp} SP in total).</>

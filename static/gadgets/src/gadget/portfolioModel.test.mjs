@@ -89,14 +89,15 @@ test('isDefault is reported only when an allocation is actually shown', () => {
   assert.equal(build({ allocation: null, isDefault: true, actuals: null }).isDefault, false);
 });
 
-// ── committed basis: target = % of Total Capacity ─────────────────────────────
-test('committed basis judges committed SP against target % of Total Capacity', () => {
-  // Capacity 360, targets 20/80. Committed 352: cat 1 has 72 SP (= 20% of 360, on target)
+// ── committed basis: target = % of Threshold Capacity ─────────────────────────
+test('committed basis judges committed SP against target % of Threshold Capacity', () => {
+  // Threshold capacity 360 (e.g. 70% of 514), targets 20/80. Committed 352: cat 1 has 72 SP (= 20% of 360, on target)
   // though it is only 20.5% of what was committed; cat 2 has 200 SP vs a 288 SP target.
   const allocation = { alloc: { 1: 20, 2: 80 }, names: { 1: 'Infra', 2: 'Features' } };
-  const r = build({ allocation, actuals: actuals({ 1: 72, 2: 200 }, 80, { basis: 'committed', totalCapacity: 360 }) });
+  const r = build({ allocation, actuals: actuals({ 1: 72, 2: 200 }, 80, { basis: 'committed', totalCapacity: 514, thresholdCapacity: 360 }) });
   const by = Object.fromEntries(r.rows.map(x => [x.id, x]));
   assert.equal(r.capacityBased, true);
+  assert.equal(r.thresholdCapacity, 360);
   assert.equal(by[1].targetSp, 72);
   assert.equal(by[2].targetSp, 288);
   assert.equal(by[1].status, 'ok');
@@ -108,11 +109,11 @@ test('committed basis judges committed SP against target % of Total Capacity', (
 
 test('live basis, or a release with no capacity, keeps the share-of-total comparison', () => {
   const allocation = { alloc: { 1: 20, 2: 80 }, names: {} };
-  const live = build({ allocation, actuals: actuals({ 1: 20, 2: 80 }, 0, { basis: 'current', totalCapacity: 360 }) });
+  const live = build({ allocation, actuals: actuals({ 1: 20, 2: 80 }, 0, { basis: 'current', totalCapacity: 514, thresholdCapacity: 360 }) });
   assert.equal(live.capacityBased, false);
   assert.equal(live.rows[0].targetSp, null);
   assert.equal(live.rows[0].status, 'ok');
-  const noCap = build({ allocation, actuals: actuals({ 1: 20, 2: 80 }, 0, { basis: 'committed', totalCapacity: 0 }) });
+  const noCap = build({ allocation, actuals: actuals({ 1: 20, 2: 80 }, 0, { basis: 'committed', totalCapacity: 0, thresholdCapacity: 0 }) });
   assert.equal(noCap.capacityBased, false);
   assert.equal(noCap.rows[0].status, 'ok');
 });
@@ -125,4 +126,10 @@ test('notes report no-estimate tickets and sprints missing a breakdown (committe
   ]);
   const live = build({ allocation: null, actuals: actuals({ 1: 5 }, 0, { basis: 'current', unestimatedCount: 1, sprintsMissingSplit: 3 }) });
   assert.deepEqual(portfolioNotes(live), ['1 ticket has no estimate']);
+});
+
+test('the target is a % of Threshold Capacity, not Total Capacity or Total Committed (R4: 20% of 238 = 47.6)', () => {
+  const allocation = { alloc: { 1: 20 }, names: { 1: 'Infra' } };
+  const r = build({ allocation, actuals: actuals({ 1: 40 }, 235, { basis: 'committed', totalCapacity: 340, thresholdCapacity: 238 }) });
+  assert.equal(r.rows.find(x => x.id === '1').targetSp, 47.6);
 });
