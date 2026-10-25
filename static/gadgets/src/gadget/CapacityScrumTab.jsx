@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { invoke, router } from '@forge/bridge';
 import { editStyles as S } from './sprintConfigShared';
 import { useCapacityRows } from './useCapacityRows';
@@ -54,6 +54,34 @@ export default function CapacityScrumTab({
     return res;
   };
   const onGetCommitted = refreshing(handleGetCommitted);
+
+  // Refresh the Status column: recount Committed (and the no-estimate list saved
+  // with it) for every sprint mapped to a release, bypassing the raw-sprint cache,
+  // then reload the Portfolio actuals. Hand-typed Committed values are skipped —
+  // a recount would overwrite them.
+  const [statusRefreshing, setStatusRefreshing] = useState(false);
+  const refreshWaiters = useRef([]);
+  const refreshStatus = async () => {
+    if (statusRefreshing) return;
+    setStatusRefreshing(true);
+    try {
+      const queue = rows.filter(r => r.releaseId && r.committedSp != null && !r.committedManual).map(r => r.id);
+      const worker = async () => {
+        while (queue.length) await handleGetCommitted(queue.shift(), { forceRefresh: true });
+      };
+      await Promise.all([worker(), worker(), worker()]);
+      if (portfolioOn) await portfolio.refreshActuals();
+    } finally {
+      setStatusRefreshing(false);
+    }
+    // Resolves once the refreshed rows/actuals are committed to the screen, so a
+    // caller reading them (Save to Confluence) sees the new numbers.
+    await new Promise(resolve => refreshWaiters.current.push(resolve));
+  };
+  useEffect(() => {
+    if (statusRefreshing) return;
+    refreshWaiters.current.splice(0).forEach(resolve => resolve());
+  }, [statusRefreshing]);
   const onCommittedChange = refreshing(handleCommittedChange);
   const onCapacityChange = refreshing(handleCapacityChange);
   const [portfolioReleaseId, setPortfolioReleaseId] = useState(null);
@@ -105,6 +133,23 @@ export default function CapacityScrumTab({
     }
   };
 
+  // Always builds from the latest render, so a snapshot taken after an async
+  // refresh (Save to Confluence) isn't read from a stale closure.
+  const snapshotBuilder = useRef(null);
+  snapshotBuilder.current = () => buildCapacitySnapshot({
+    periodType: 'sprint', hideClosed, visibleRows, allRows: rows, releaseOptions,
+    baseCapacitySp, releaseMappingEnabled, thresholdPct: releaseThresholdPct,
+    portfolio: portfolioOn ? {
+      thresholds: portfolioThresholds,
+      allocations: portfolio.allocations,
+      defaultAllocation: portfolio.defaultAllocation,
+      actuals: portfolio.actuals,
+      options: portfolio.options,
+      optionsLoaded: portfolio.optionsLoaded,
+      actualsLoading: portfolio.actualsLoading,
+    } : null,
+  });
+
   if (loading) {
     return <div style={{ padding: 20, fontSize: 13, color: 'var(--text-subtle)' }}>Loading sprints…</div>;
   }
@@ -142,19 +187,9 @@ export default function CapacityScrumTab({
           <div style={{ marginLeft: 'auto' }}>
             <SaveToConfluenceButton
               projectKey={projectKey}
-              getSnapshot={() => buildCapacitySnapshot({
-                periodType: 'sprint', hideClosed, visibleRows, allRows: rows, releaseOptions,
-                baseCapacitySp, releaseMappingEnabled, thresholdPct: releaseThresholdPct,
-                portfolio: portfolioOn ? {
-                  thresholds: portfolioThresholds,
-                  allocations: portfolio.allocations,
-                  defaultAllocation: portfolio.defaultAllocation,
-                  actuals: portfolio.actuals,
-                  options: portfolio.options,
-                  optionsLoaded: portfolio.optionsLoaded,
-                  actualsLoading: portfolio.actualsLoading,
-                } : null,
-              })}
+              // Recount first so the page doesn't carry stale Status numbers.
+              beforeSave={releaseMappingEnabled ? refreshStatus : undefined}
+              getSnapshot={() => snapshotBuilder.current()}
             />
           </div>
         )}
@@ -167,6 +202,8 @@ export default function CapacityScrumTab({
           releaseOptions={releaseOptions}
           baseCapacitySp={baseCapacitySp}
           thresholdPct={releaseThresholdPct}
+          onRefresh={refreshStatus}
+          refreshing={statusRefreshing}
           portfolio={portfolioOn ? {
             thresholds: portfolioThresholds,
             allocations: portfolio.allocations,
@@ -210,7 +247,7 @@ export default function CapacityScrumTab({
               velocityLoading={velocityLoadingIds.has(sprint.id)}
               onCapacityChange={v => onCapacityChange(sprint.id, v)}
               onCommittedChange={v => onCommittedChange(sprint.id, v)}
-              onGetCommitted={() => onGetCommitted(sprint.id)}
+              onGetCommitted={() => onGetCommitted(sprint.id, { forceRefresh: true })}
               onVelocityChange={v => handleVelocityChange(sprint.id, v)}
               onGetVelocity={() => handleGetVelocity(sprint.id)}
               statusSlot={<StatusChip state={sprint.state} />}

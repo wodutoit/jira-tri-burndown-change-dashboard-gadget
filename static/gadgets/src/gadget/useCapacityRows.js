@@ -50,12 +50,12 @@ export function useCapacityRows({
     await invoke(setCommittedResolver, { projectKey, [idField]: id, committedSp });
   };
 
-  const handleGetCommitted = async (id) => {
+  const handleGetCommitted = async (id, { forceRefresh = false } = {}) => {
     setCommittedLoadingIds(prev => new Set([...prev, id]));
     try {
-      const res = await invoke(getCommittedResolver, { projectKey, [idField]: id, spFieldId, graceWindowHours });
+      const res = await invoke(getCommittedResolver, { projectKey, [idField]: id, spFieldId, graceWindowHours, forceRefresh });
       if (res.error) { setError(res.error); return res; }
-      patchRow(id, { committedSp: res.committedSp, committedAt: new Date().toISOString() });
+      patchRow(id, { committedSp: res.committedSp, committedAt: new Date().toISOString(), committedManual: false });
       // The count itself was saved; only the Portfolio category breakdown failed.
       if (res.splitError) setError(`Committed SP saved, but its portfolio category breakdown couldn't be recorded: ${res.splitError} Try Get SP Count again.`);
       return res;

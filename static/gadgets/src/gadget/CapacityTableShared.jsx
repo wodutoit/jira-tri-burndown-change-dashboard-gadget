@@ -154,7 +154,7 @@ export function ReleaseSelectCell({ releaseId, releaseOptions, onChange }) {
 // `portfolio` (optional, Scrum + Portfolio Planning only) adds an allocation bar
 // and Portfolio button under each release's Status chip:
 //   { thresholds, allocations, actuals, options, optionsLoaded, actualsLoading, error, onOpen(releaseId) }
-export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, baseCapacitySp, thresholdPct, portfolio = null }) {
+export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, baseCapacitySp, thresholdPct, portfolio = null, onRefresh = null, refreshing = false }) {
   const STATUS_LABELS = {
     none: { label: '—', bg: 'transparent', text: 'var(--text-subtlest)' },
     overCapacity: { label: 'Over Capacity', bg: 'var(--over-bg)', text: 'var(--over-text)' },
@@ -176,7 +176,20 @@ export function ReleasesSummaryTable({ rows, allRows = rows, releaseOptions, bas
           <th style={S.th}>Threshold capacity</th>
           <th style={S.th}>Total committed</th>
           <th style={S.th}>Avg velocity</th>
-          <th style={S.th}>Status</th>
+          <th style={S.th}>
+            Status
+            {onRefresh && (
+              <button
+                onClick={onRefresh}
+                disabled={refreshing}
+                title="Recount Committed SP (and tickets without estimates) from Jira for every sprint mapped to a release. Hand-typed Committed values are left as they are."
+                aria-label="Refresh status"
+                style={{ ...S.smallBtn, marginLeft: 8, padding: '0 6px', opacity: refreshing ? 0.6 : 1 }}
+              >
+                {refreshing ? 'Refreshing…' : '↻'}
+              </button>
+            )}
+          </th>
         </tr>
       </thead>
       <tbody>

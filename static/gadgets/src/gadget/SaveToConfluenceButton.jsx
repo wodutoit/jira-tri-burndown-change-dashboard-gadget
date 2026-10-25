@@ -5,7 +5,8 @@ import { editStyles as S } from './sprintConfigShared';
 // "Save to Confluence" button for the Capacity tab. Sends the on-screen
 // snapshot to saveCapacityToConfluence; if the space's "-Capacity Log" page
 // already exists, asks whether to overwrite it or create a new (timestamped) one.
-export default function SaveToConfluenceButton({ projectKey, getSnapshot }) {
+// `beforeSave` (optional, async) runs first — used to refresh the on-screen numbers.
+export default function SaveToConfluenceButton({ projectKey, getSnapshot, beforeSave }) {
   const [busy, setBusy] = useState(false);
   const [existing, setExisting] = useState(null); // { id, title, url } while asking
   const [result, setResult] = useState(null);     // { page, status }
@@ -16,6 +17,8 @@ export default function SaveToConfluenceButton({ projectKey, getSnapshot }) {
     setError(null);
     setResult(null);
     try {
+      // Only on the first click; the overwrite/new-page follow-up reuses those numbers.
+      if (mode === 'check' && beforeSave) await beforeSave();
       const res = await invoke('saveCapacityToConfluence', { projectKey, snapshot: getSnapshot(), mode });
       if (res.error) { setError(res.error); setExisting(null); return; }
       if (res.status === 'exists') { setExisting(res.page); return; }

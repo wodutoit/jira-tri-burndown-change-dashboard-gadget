@@ -2596,7 +2596,7 @@ resolver.define('getScrumSprintsForCapacity', async ({ payload }) => {
 });
 
 resolver.define('getSprintCommittedSp', async ({ payload }) => {
-  const { projectKey, sprintId, spFieldId } = payload ?? {};
+  const { projectKey, sprintId, spFieldId, forceRefresh } = payload ?? {};
   if (!projectKey || !sprintId || !spFieldId) return { error: 'Missing config.' };
   try {
     // Same two inputs TRI Burndown / Scope Change now use, so the numbers agree:
@@ -2622,7 +2622,10 @@ resolver.define('getSprintCommittedSp', async ({ payload }) => {
       committedSp = Math.round(committedKeys.reduce((a, k) => a + (issueData[k].sp || 0), 0) * 10) / 10;
       issueDataForSplit = issueData;
     } else {
-      const { issueData } = await getSprintRawData({ projectKey, sprint, spFieldId });
+      // `forceRefresh` (the Capacity "refresh status" button / Save to Confluence)
+      // bypasses the raw-sprint cache, which is otherwise 5 min for active
+      // sprints and permanent for closed ones.
+      const { issueData } = await getSprintRawData({ projectKey, sprint, spFieldId, forceRefresh: !!forceRefresh });
       const startDate = sprint.startDate?.slice(0, 10);
       if (!startDate) return { error: 'Sprint has no start date yet.' };
       const endDate = actualSprintEnd(sprint)?.slice(0, 10) || startDate;
@@ -2657,7 +2660,7 @@ resolver.define('getSprintCommittedSp', async ({ payload }) => {
     } catch (e) {
       splitError = e.message;
     }
-    await updateCapacityRow(projectKey, sprintId, { committedSp, committedAt: new Date().toISOString(), committedSplit, committedNoEstimate });
+    await updateCapacityRow(projectKey, sprintId, { committedSp, committedAt: new Date().toISOString(), committedSplit, committedNoEstimate, committedManual: false });
     return { committedSp, ...(splitError ? { splitError } : {}) };
   } catch (e) {
     return { error: e.message };
@@ -2675,6 +2678,8 @@ resolver.define('setSprintCommittedSp', async ({ payload }) => {
       committedAt: new Date().toISOString(),
       committedSplit: null,
       committedNoEstimate: null,
+      // Marks the number as typed, not counted, so a bulk status refresh leaves it alone.
+      committedManual: true,
     });
     return { ok: true };
   } catch (e) {
